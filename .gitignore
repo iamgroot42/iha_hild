@@ -1,0 +1,6 @@
+.vscode/*
+__pycache__/*
+*.npy
+*.tar.gz
+*.pt
+cifar-10-batches-py/*
