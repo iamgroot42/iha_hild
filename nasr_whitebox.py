@@ -33,19 +33,19 @@ class MetaClassifier(nn.Module):
 
         # Component for output
         self.output_component = nn.Sequential(
-            nn.Linear(self.num_classes_classifier, 128),
+            nn.Linear(self.num_classes_classifier, 64),
             nn.ReLU(),
-            nn.Linear(128, feature_dim),
+            nn.Linear(64, feature_dim),
         )
         # Component for predicted class (1-hot encoding)
         self.y_component = nn.Sequential(
-            nn.Linear(self.num_classes_classifier, 128),
+            nn.Linear(self.num_classes_classifier, 64),
             nn.ReLU(),
-            nn.Linear(128, feature_dim),
+            nn.Linear(64, feature_dim),
         )
         # Component for loss
         self.loss_component = nn.Sequential(
-            nn.Linear(1, 128), nn.ReLU(), nn.Linear(128, feature_dim)
+            nn.Linear(1, 64), nn.ReLU(), nn.Linear(64, feature_dim)
         )
         # Component for gradients
         self.conv_grad_component = []
@@ -54,12 +54,12 @@ class MetaClassifier(nn.Module):
             self.conv_grad_component.append(
                 nn.Sequential(
                     # out, in, k, k
-                    nn.Conv3d(conv_shape[0], 256, (1, conv_shape[2], conv_shape[3])),
+                    nn.Conv3d(conv_shape[0], 128, (1, conv_shape[2], conv_shape[3])),
                     nn.Flatten(),
                     nn.ReLU(),
-                    nn.Linear(256 * conv_shape[1], 128),
+                    nn.Linear(128 * conv_shape[1], 64),
                     nn.ReLU(),
-                    nn.Linear(128, feature_dim),
+                    nn.Linear(64, feature_dim),
                 )
             )
         self.fc_grad_component = []
@@ -67,12 +67,12 @@ class MetaClassifier(nn.Module):
             # For now, just flatten and throw into FC layers
             self.fc_grad_component.append(
                 nn.Sequential(
-                    nn.Conv2d(1, 256, (1, f_shape[1])),
+                    nn.Conv2d(1, 128, (1, f_shape[1])),
                     nn.Flatten(),
                     nn.ReLU(),
-                    nn.Linear(256 * f_shape[0], 128),
+                    nn.Linear(128 * f_shape[0], 64),
                     nn.ReLU(),
-                    nn.Linear(128, feature_dim),
+                    nn.Linear(64, feature_dim),
                 )
             )
         self.conv_grad_component = nn.ModuleList(self.conv_grad_component)
@@ -80,13 +80,13 @@ class MetaClassifier(nn.Module):
 
         # Encoder component (combines them all)
         self.encoder = nn.Sequential(
-            nn.Linear((len(layers_conv) + len(layers_fc) + 3) * feature_dim, 256),
+            nn.Linear((len(layers_conv) + len(layers_fc) + 3) * feature_dim, 128),
             nn.ReLU(),
-            nn.Linear(256, 128),
+            nn.Linear(128, 32),
             nn.ReLU(),
-            nn.Linear(128, 64),
+            nn.Linear(32, 16),
             nn.ReLU(),
-            nn.Linear(64, 1),
+            nn.Linear(16, 1),
         )
 
     def forward(self, data):
@@ -184,42 +184,46 @@ def main():
     )
 
     # CIFAR
-    num_train_points = 500  # 20000  # 25000
-    num_test_points = 100  # 5000
+    num_train_points = 10000  # 20000  # 25000
+    feature_dim = 32
+    num_classes = 10
+    num_samples_test = 50
 
-    def meta_attack_per_point(index, target_model, label: int):
-        meta_clf = MetaClassifier(target_model)
-        # Sample num_train_points from other_indices (non-members)
-        nonmember_indices = np.random.choice(
-            other_indices, num_train_points, replace=False
-        )
-        # Sample num_train_points from train_indices except index (members)
-        member_indices = np.random.choice(
-            [i for i in train_index if i != index], num_train_points, replace=False
-        )
-        # Createe Subset datasets for these two
-        nonmember_dset = ch.utils.data.Subset(all_data, nonmember_indices)
-        member_dset = ch.utils.data.Subset(all_data, member_indices)
-        # Createe corresponding labels (0 for nonmem, 1 for mem)
-        labels = ch.tensor([0] * len(nonmember_indices) + [1] * len(member_indices))
-        # Combine these two into one dataset
-        combined_dset = ch.utils.data.ConcatDataset([nonmember_dset, member_dset])
+    # Create Subset datasets for members
+    member_dset = ch.utils.data.Subset(all_data, train_index)
+    # and non- members
+    nonmember_indices = np.random.choice(other_indices, num_train_points, replace=False)
+    nonmember_dset = ch.utils.data.Subset(all_data, nonmember_indices)
 
-        # Create meta-dset (will process and collect features)
-        meta_dset = MetaDataset(
-            target_model,
-            combined_dset,
-            labels,
-            num_classes=meta_clf.num_classes_classifier,
-        )
+    # Create corresponding labels (1 for mem, 0 for nonmem).
+    labels = ch.tensor([1] * len(train_index) + [0] * len(nonmember_indices))
+    # Combine these two into one dataset
+    combined_dset = ch.utils.data.ConcatDataset([member_dset, nonmember_dset])
+    # Only need to collect features once
+    meta_dset = MetaDataset(
+        model,
+        combined_dset,
+        labels,
+        num_classes=num_classes,
+    )
 
+    def meta_attack_per_point(index, target_model):
+        # Prepare to train meta-classifier
+        meta_clf = MetaClassifier(target_model, feature_dim=feature_dim)
+
+        # Remove index being tested
+        all_indices = np.arange(len(meta_dset))
+        all_indices = np.delete(all_indices, index)
+        meta_dset_use = ch.utils.data.Subset(meta_dset, all_indices)
+
+        # Create mask of length labeels where index position
         batch_size = 64
         learning_rate = 0.001
-        epochs = 20
+        epochs = 100
 
         # Create loaders for this dset
         train_loader = ch.utils.data.DataLoader(
-            meta_dset, batch_size=batch_size, shuffle=True
+            meta_dset_use, batch_size=batch_size, shuffle=True
         )
         criterion = nn.BCEWithLogitsLoss()
 
@@ -236,7 +240,7 @@ def main():
         # Collect feature for datapoint to be tested
         features = meta_dset._collect_features(
             all_data[index][0].unsqueeze(0).cuda(),
-            ch.tensor([label]).cuda(),
+            ch.tensor([all_data[index][1]]).cuda(),
         )
         # Unsqueeze all of them
         features_send = []
@@ -254,16 +258,20 @@ def main():
 
     signals_in, signals_out = [], []
     for index in train_index:
-        signals_in.append(meta_attack_per_point(index, model, 1))
+        signals_in.append(meta_attack_per_point(index, model))
+        if len(signals_in) >= num_samples_test:
+            break
     for index in other_indices:
-        signals_out.append(meta_attack_per_point(index, model, 0))
+        signals_out.append(meta_attack_per_point(index, model))
+        if len(signals_out) >= num_samples_test:
+            break
 
     # Prepare data for saving
     signals = np.concatenate((signals_out, signals_in))
     labels = np.concatenate((np.zeros(len(signals) // 2), np.ones(len(signals) // 2)))
 
     # Save both these arrays
-    np.save("signals_pin.npy", {"signals": signals, "labels": labels})
+    np.save("signals_nasr.npy", {"signals": signals, "labels": labels})
 
 
 if __name__ == "__main__":
