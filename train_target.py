@@ -43,24 +43,27 @@ def get_model_and_criterion(dataset_name: str, device: str = "cuda"):
     return m, nn.CrossEntropyLoss()
 
 
-def get_loaders(all_data, train_index, test_index, batch_size: int):
+def get_loaders(all_data, train_index, test_index, batch_size: int, start_seed: int = 2023):
+    num_workers = 4
     train_loader = ch.utils.data.DataLoader(
         ch.utils.data.Subset(all_data, train_index),
         batch_size=batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=num_workers,
         pin_memory=True,
         persistent_workers=True,
         prefetch_factor=16,
+        worker_init_fn = lambda worker_id: np.random.seed(start_seed + worker_id)
     )
     test_loader = ch.utils.data.DataLoader(
         ch.utils.data.Subset(all_data, test_index),
         batch_size=batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=num_workers,
         pin_memory=True,
         persistent_workers=True,
         prefetch_factor=16,
+        worker_init_fn = lambda worker_id: np.random.seed(start_seed + worker_id)
     )
     return train_loader, test_loader
 
@@ -136,6 +139,9 @@ def train_model(
             f"Epoch: {epoch_idx+1}/{epochs} | Loss: {train_loss/len(train_loader):.4f} | Accuracy: {100 * train_acc / samples_seen:.2f}"
         )
 
+        if epoch_idx % 5 == 0:
+            print(f"Epoch: {epoch_idx+1}/{epochs} | Loss: {train_loss/len(train_loader):.4f} | Accuracy: {100 * train_acc / samples_seen:.2f}")
+
     # Validate the performance of the model
     model.eval()
     # Assigning variables for computing loss and accuracy
@@ -150,7 +156,7 @@ def train_model(
     with ch.no_grad():
         for data, target in test_loader:
             # Moving data and target to the device
-            data, target = data.to(device), target.to(device)
+            data, target = data.to(device, non_blocking=True), target.to(device, non_blocking=True)
             # Cast target to long tensor
             target = target.long()
 

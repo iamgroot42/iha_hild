@@ -4,3 +4,7 @@ __pycache__/*
 *.tar.gz
 *.pt
 cifar-10-batches-py/*
+*.png
+*.log
+
+.ipynb_checkpoints/*

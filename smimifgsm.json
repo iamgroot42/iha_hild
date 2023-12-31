@@ -1,0 +1,27 @@
+{
+    "experiment_name": "adv_for_mi",
+    "dataset_config": {
+        "name": "cifar10",
+        "type": "image"
+    },
+    "attack_configs_dict": [
+        {
+            "name": "SMIMIFGSM_transfer",
+            "access_level": "no",
+            "targeted": false,
+            "eps": 16,
+            "query_budget": 1,
+            "adv_model_config": {
+                "use_pretrained": true,
+                "name": "custom",
+                "dataset": "cifar10"
+            },
+            "aux_model_configs_dict": [],
+            "attack_params": {
+                "n_iters": 100,
+                "image_width": 32,
+                "image_resizes": []
+            }
+        }
+    ]
+}
