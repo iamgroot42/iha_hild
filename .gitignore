@@ -8,3 +8,9 @@ cifar-10-batches-py/*
 *.log
 
 .ipynb_checkpoints/*
+
+*.egg-info/*
+
+mi_benchmark/__pycache__/*
+mi_benchmark/*/__pycache__/*
+mi_benchmark/cifar-10-batches-py/*

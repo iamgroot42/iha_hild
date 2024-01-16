@@ -8,7 +8,6 @@ import torch.nn.init as init
 import torch.nn.functional as F
 from torch.autograd import Variable
 
-import sys
 import numpy as np
 
 

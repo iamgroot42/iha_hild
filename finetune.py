@@ -12,7 +12,7 @@ import torch.nn as nn
 
 from bbeval.config import ExperimentConfig
 
-from train_target import get_model_and_criterion, load_data, train_model
+from mi_benchmark.train import get_model_and_criterion, get_data, train_model
 
 
 # Create a CustomSampler that always includes some point X in batch, and samples remaining points from other_data_source
@@ -37,7 +37,12 @@ class SpecificPointIncludedLoader:
 
 
 def finetune(
-    model, interest_point, other_data_source, num_times: int, learning_rate: float
+    model,
+    interest_point,
+    other_data_source,
+    num_times: int,
+    learning_rate: float,
+    batch_size: int = 256,
 ):
     """
     Create N (where model was trained for N epochs) batches of data where 1 point is of interest,
@@ -47,7 +52,7 @@ def finetune(
     """
     # Create loader out of given data source
     given_loader = ch.utils.data.DataLoader(
-        other_data_source, batch_size=63, shuffle=True
+        other_data_source, batch_size=batch_size - 1, shuffle=True
     )
     # Create custom loader
     loader = SpecificPointIncludedLoader(given_loader, interest_point, num_times)
@@ -57,35 +62,43 @@ def finetune(
 
     def measurement(a, b):
         # Get model parameters
-        ret = []
+        params = []
         for p in model_.parameters():
-            ret.extend(list(p.detach().cpu().numpy().flatten()))
-        ret = np.array(ret)
-        return ret
+            params.extend(list(p.detach().cpu().numpy().flatten()))
+        params = np.array(params)
+
         # Get model prediction (will use to compare later)
-        # ret = ch.nn.functional.softmax(model_(a).detach().cpu()).numpy()[0]
+        pred_softmax = ch.nn.functional.softmax(
+            model_(a).detach().cpu(), dim=1
+        ).numpy()[0]
         # Measure loss
-        # ret = criterion(model_(a), b).cpu().item()
-        # return ret
+        loss_measure = criterion(model_(a), b).detach().cpu().item()
+
         # Compute gradient norm with given (a, b) datapoint
         model_.zero_grad()
         pred = model_(a)
         loss = criterion(pred, b)
         loss.backward()
-        ret = []
+        grads = []
         for p in model_.parameters():
-            ret.extend(list(p.grad.detach().cpu().numpy().flatten()))
+            grads.extend(list(p.grad.detach().cpu().numpy().flatten()))
         model_.zero_grad()
-        ret = np.array(ret)
-        return ret
+        grads = np.array(grads)
+
+        return {
+            "pred": pred_softmax,
+            "loss": loss_measure,
+            "grads": grads,
+            "params": params,
+        }
 
     # Take note of loss for interest_point before fine-tuning
-    score_before = measurement(
+    signals_before = measurement(
         interest_point[0].unsqueeze(0), ch.tensor([interest_point[1]])
     )
 
     model_.cuda()
-    model_ = train_model(
+    model_, _, _ = train_model(
         model_,
         criterion,
         loader,
@@ -96,31 +109,31 @@ def finetune(
         loss_multiplier=-1,
     )
     # Do sth with new model
-    score_after = measurement(
+    signals_after = measurement(
         interest_point[0].unsqueeze(0), ch.tensor([interest_point[1]])
     )
-    near_zero = lambda z: np.sum(np.abs(z) < 1e-4)
-    before = near_zero(score_before)
-    after = near_zero(score_after)
-    norm_diff = np.linalg.norm(score_after - score_before)
-    return before, after, norm_diff
 
-    # Compute before/after/diff scores
-    # return score_before, score_after, score_before - score_after
+    return {
+        "before": signals_before,
+        "after": signals_after,
+    }
+
     # Compute similarity between both pred probs
     # Use l-2 norm
     # return np.linalg.norm(score_before - score_after)
     # Use cross-entropy
     # return -np.sum(score_before * np.log(score_after + 1e-8))
+
     # Entropy before, after, and drop
     # ent_before = -np.sum(score_before * np.log(score_before + 1e-8))
     # ent_after = -np.sum(score_after * np.log(score_after + 1e-8))
     # return ent_before, ent_after, ent_before - ent_after
+
     # Compute grad norm before, grad norm after, and norm of grad diffs
-    before = np.linalg.norm(score_before)
-    after = np.linalg.norm(score_after)
-    diff = np.linalg.norm(score_after - score_before)
-    return before, after, diff
+    # before = np.linalg.norm(score_before)
+    # after = np.linalg.norm(score_after)
+    # diff = np.linalg.norm(score_after - score_before)
+    # return before, after, diff
 
 
 def main():
@@ -129,7 +142,7 @@ def main():
     config = ExperimentConfig.load(currdir + "smimifgsm.json", drop_extra_fields=False)
 
     # Load target model
-    model_dict = ch.load("target_model/1.pt")
+    model_dict = ch.load("./models/0.pt")
     # Extract member information and model
     model_weights = model_dict["model"]
     model, _ = get_model_and_criterion("cifar10", device="cpu")
@@ -139,42 +152,48 @@ def main():
     # Make sure it's on eval model
     model.eval()
 
-    train_index, test_index = model_dict["train_index"], model_dict["test_index"]
+    train_index = model_dict["train_index"]
 
     # Get data
-    all_data = load_data(None, None)
-    # Get indices out of range(len(all_data)) that are not train_index or test_index
-    other_indices = np.array(
-        [
-            i
-            for i in range(len(all_data))
-            if i not in train_index and i not in test_index
-        ]
+    train_data, _ = get_data(just_want_data=True)
+    # Get indices out of range(len(train_data)) that are not train_index or test_index
+    other_indices_train = np.array(
+        [i for i in range(len(train_data)) if i not in train_index]
     )
 
     # CIFAR
-    num_train_points = 25000
+    num_train_points = 10000
     num_samples_test = 500
     learning_rate = 0.001
-    epochs = 1  # 20
+    epochs = 5  # 20
+    batch_size = 256
 
     # Create Subset datasets for members
-    member_dset = ch.utils.data.Subset(all_data, train_index)
+    member_dset = ch.utils.data.Subset(train_data, train_index)
     # and non- members
-    nonmember_indices = np.random.choice(other_indices, num_train_points, replace=False)
+    nonmember_indices = np.random.choice(
+        other_indices_train, num_train_points, replace=False
+    )
     # Break nonmember_indices here into 2 - one for sprinkling in FT data, other for actual non-members
     nonmember_indices_ft = nonmember_indices[: num_train_points // 2]
     nonmember_indices_test = nonmember_indices[num_train_points // 2 :]
 
-    nonmember_dset_ft = ch.utils.data.Subset(all_data, nonmember_indices_ft)
-    nonmember_dset = ch.utils.data.Subset(all_data, nonmember_indices_test)
+    nonmember_dset_ft = ch.utils.data.Subset(train_data, nonmember_indices_ft)
+    nonmember_dset = ch.utils.data.Subset(train_data, nonmember_indices_test)
 
     signals_in, signals_out = [], []
     for mem in tqdm(
         member_dset, total=num_samples_test, desc="Collecting member signals"
     ):
         signals_in.append(
-            finetune(model, mem, nonmember_dset_ft, epochs, learning_rate)
+            finetune(
+                model,
+                mem,
+                nonmember_dset_ft,
+                epochs,
+                learning_rate,
+                batch_size=batch_size,
+            )
         )
         if len(signals_in) >= num_samples_test:
             break
@@ -184,14 +203,21 @@ def main():
         desc="Collecting non-member signals",
     ):
         signals_out.append(
-            finetune(model, nonmem, nonmember_dset_ft, epochs, learning_rate)
+            finetune(
+                model,
+                nonmem,
+                nonmember_dset_ft,
+                epochs,
+                learning_rate,
+                batch_size=batch_size,
+            )
         )
         if len(signals_out) >= num_samples_test:
             break
 
     signals_in = np.array(signals_in)
     signals_out = np.array(signals_out)
-    np.save(f"unlearn_{epochs}b_weights.npy", {"in": signals_in, "out": signals_out})
+    np.save(f"signals/unlearn/{epochs}e_{batch_size}b.npy", {"in": signals_in, "out": signals_out})
 
 
 if __name__ == "__main__":

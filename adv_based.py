@@ -22,7 +22,7 @@ from bbeval.attacker.transfer_methods._manipulate_input import (
 from bbeval.config import AttackerConfig, ExperimentConfig
 from bbeval.attacker.transfer_methods.SMIMIFGSM import SMIMIFGSM
 
-from train_target import get_model_and_criterion, load_data
+from mi_benchmark.train import get_model_and_criterion, load_data
 from tqdm import tqdm
 
 from autoattack import AutoAttack
@@ -131,40 +131,6 @@ class CustomSMIMIFGSM(SMIMIFGSM):
         return perturbation_norm, i, loss_og
 
 
-def aa_pert_dist(model, x, y, y_true):
-    """Using AutoAttack
-    adversary = AutoAttack(model, norm="Linf", eps=16 / 255, version="standard")
-    adversary.attacks_to_run = ["apgd-dlr"]
-    dict_adv = adversary.run_standard_evaluation_individual(x, y, bs=1)
-    adv = dict_adv["apgd-dlr"]
-    diff = ch.norm(adv - x, p=float("inf")).item()
-    """
-    adversary = AutoAttack(model, norm="Linf", eps=1, version="standard")
-    adv = adversary.run_standard_evaluation(x, y, bs=1)
-    diff = ch.norm(adv - x, p=float("inf")).cpu().item()
-    loss = ch.nn.CrossEntropyLoss()(model(x), y_true).item()
-    return diff, loss
-    attack = SuperDeepFool(
-        model,
-        steps=1000,
-        overshoot=0.01,
-        search_iter=50,
-        number_of_samples=1,
-        l_norm="L2",
-    )
-    # Compute loss for x as well
-    pred = model(x)
-    loss = ch.nn.CrossEntropyLoss()(pred, y_true).item()
-    # Compute log (p[y] / (1 - p[y]))
-    pred = ch.nn.Softmax(dim=1)(pred)[0, y_true].cpu().item()
-    eps = 1e-8
-    pred = min(1 - eps, max(eps, pred))
-    lira_score = np.log(pred / (1 - pred))
-    adv = attack(x, y, verbose=False)
-    diff = ch.norm(adv - x, p=2).item()
-    # return diff, loss
-    return diff, lira_score
-
 
 def main():
     currdir = "."
@@ -215,11 +181,11 @@ def main():
         x_ = z[0].unsqueeze(0).cuda()
         y_true = ch.tensor([z[1]]).cuda()
         # Use given label as y_
-        # y_ = y_true
+        y_ = y_true
         # Use predicted label as y_
         # y_ = ch.argmax(model(x_), 1)
         # Use hardest label as y_
-        y_ = ch.argmin(model(x_), 1)
+        # y_ = ch.argmin(model(x_), 1)
         return aa_pert_dist(model, x_, y_, y_true)
         # Also compute loss, while at it
         return attacker.attack(x_, y_true, y_target=y_)
@@ -243,7 +209,7 @@ def main():
 
     signals_in = np.array(signals_in)
     signals_out = np.array(signals_out)
-    np.save("signals_adv_targethardest_apgd.npy", {"in": signals_in, "out": signals_out})
+    np.save("signals_adv_true_apgd.npy", {"in": signals_in, "out": signals_out})
     # np.save("signals_adv_targ_smimi.npy", {"in": signals_in, "out": signals_out})
 
     plt.scatter(signals_in[:, 0], signals_in[:, 1], alpha=0.75, label="in")
