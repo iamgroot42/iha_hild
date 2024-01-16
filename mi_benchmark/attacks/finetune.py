@@ -3,7 +3,7 @@
 """
 import numpy as np
 from mi_benchmark.attacks.base import Attack
-from mi_benchmark.attacks.utils import compute_gradient_norm
+from mi_benchmark.attacks.attack_utils import compute_gradient_norm
 
 
 class Unlearning(Attack):

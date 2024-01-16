@@ -7,7 +7,7 @@ import scipy
 import torch as ch
 
 from mi_benchmark.attacks.base import Attack
-from mi_benchmark.attacks.utils import compute_scaled_logit
+from mi_benchmark.attacks.attack_utils import compute_scaled_logit
 
 
 class LiRAOffline(Attack):
@@ -23,7 +23,7 @@ class LiRAOffline(Attack):
     @ch.no_grad()
     def compute_scores(self, x, y) -> np.ndarray:
         observed_conf = compute_scaled_logit(self.model, x, y)
-        
+
         confs = []
         for out_model in self.out_models:
             out_model.cuda()

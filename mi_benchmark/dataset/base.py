@@ -7,6 +7,15 @@ class Dataset:
         self.train = train
         self.test = test
         self.num_classes = num_classes
+    
+    def get_train_data(self):
+        return self.train
+    
+    def get_test_data(self):
+        return self.test
+    
+    def get_data(self):
+        return self.get_train_data(), self.get_test_data()
 
     def make_splits(
         self, seed: int, pkeep: float, exp_id: int = None, num_experiments: int = None

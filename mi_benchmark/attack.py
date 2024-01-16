@@ -6,57 +6,76 @@ import argparse
 import os
 import torch as ch
 import numpy as np
+from tqdm import tqdm
 
 from mi_benchmark.models.utils import get_model
-
-
-def get_data(*args):
-    return
+from mi_benchmark.dataset.utils import get_dataset
+from mi_benchmark.attacks.utils import get_attack
 
 
 def main(args):
     # Load target model
     target_model = get_model(args.model_arch)
-    model_dict = ch.load(f"./models/{args.target_model_index}.pt")["model"]
-    target_model.load_state_dict(model_dict, strict=False)
+    model_dict = ch.load(f"./models/{args.target_model_index}.pt")
+    target_model.load_state_dict(model_dict["model"], strict=False)
     target_model.eval()
 
     # Pick records (out of all train) to test
     train_index = model_dict["train_index"]
 
     # TODO: Get these stats from a dataset class
+    ds = get_dataset(args.dataset)()
     # CIFAR
     num_train_points = 10000
 
     # Get data
-    train_data, _ = get_data(just_want_data=True)
+    train_data = ds.get_train_data()
     # Get indices out of range(len(train_data)) that are not train_index or test_index
     other_indices_train = np.array(
         [i for i in range(len(train_data)) if i not in train_index]
     )
 
     # Create Subset datasets for members
-    member_dset = ch.utils.data.Subset(
-        train_data, np.random.choice(train_index, args.num_points, replace=False)
-    )
-    # and non- members
+    np.random.seed(args.exp_seed)
+    train_index_subset = np.random.choice(train_index, args.num_points, replace=False)
+
+    member_dset = ch.utils.data.Subset(train_data, train_index_subset)
+
+    # Sample members
+    np.random.seed(args.exp_seed + 1)
     nonmember_indices = np.random.choice(
         other_indices_train, num_train_points, replace=False
     )
+
     # Break nonmember_indices here into 2 - one for sprinkling in FT data, other for actual non-members
     nonmember_indices_ft = nonmember_indices[: num_train_points // 2]
     nonmember_indices_test = nonmember_indices[num_train_points // 2 :]
 
     nonmember_dset_ft = ch.utils.data.Subset(train_data, nonmember_indices_ft)
+
+    # Sample non-members
+    np.random.seed(args.exp_seed + 2)
+    nonmember_index_subset = np.random.choice(
+        nonmember_indices_test, args.num_points, replace=False
+    )
     nonmember_dset = ch.utils.data.Subset(
         train_data,
-        np.random.choice(nonmember_indices_test, args.num_points, replace=False),
+        nonmember_index_subset,
+    )
+
+    # Make loaders out of mem, non-mem (no shuffle)
+    member_loader = ch.utils.data.DataLoader(
+        member_dset, batch_size=args.batch_size, shuffle=False
+    )
+    nonmember_loader = ch.utils.data.DataLoader(
+        nonmember_dset, batch_size=args.batch_size, shuffle=False
     )
 
     # For reference-based attacks, train out models
-    attacker = None
-    out_models, out_indices = [], []
+    attacker = get_attack(args.attack)(target_model)
+
     if attacker.reference_based:
+        out_models, out_indices = [], []
         if args.same_seed_ref:
             # Look specifically inside folder corresponding to this model's seed
             for m in os.listdir(f"./same_seed_models/{args.target_model_index}"):
@@ -82,11 +101,49 @@ def main(args):
                     out_models.append(model)
                     out_indices.append(train_index)
 
+        # For each reference model, look at out_indices and create a 'isin' based 2D bool-map
+        # Using train_index_subset
+        out_indices = np.array(out_indices)
+        member_map = np.zeros((len(out_models), len(train_index_subset)), dtype=bool)
+        for i, out_index in enumerate(out_indices):
+            member_map[i] = np.isin(train_index_subset, out_index)
+    else:
+        # Shift model to CUDA (won't have ref-based models in memory as well)
+        target_model.cuda()
+
+    # Compute signals for member data
+    signals_in, signals_out = [], []
+    for x, y in tqdm(member_loader):
+        signals_in.append(attacker.compute_scores(x.cuda(), y.cuda()))
+    # Compute signals for non-member data
+    for x, y in tqdm(nonmember_loader):
+        signals_out.append(attacker.compute_scores(x.cuda(), y.cuda()))
+
+    # Save signals
+    signals_in = np.concatenate(signals_in, 0)
+    signals_out = np.concatenate(signals_out, 0)
+    save_dir = f"/u/as9rw/work/auditing_mi/signals/{args.target_model_index}"
+
+    # Make sure save_dir exists
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    np.save(
+        f"{save_dir}/{args.attack}.npy",
+        {
+            "in": signals_in,
+            "out": signals_out,
+        },
+    )
+
 
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
     args.add_argument("--model_arch", type=str, default="wide_resnet_cifar")
     args.add_argument("--dataset", type=str, default="cifar10")
+    args.add_argument("--attack", type=str, default="LOSS")
+    args.add_argument("--batch_size", type=int, default=16)
+    args.add_argument("--exp_seed", type=int, default=2024)
     args.add_argument("--target_model_index", type=int, default=0)
     args.add_argument(
         "--num_points",
@@ -96,7 +153,6 @@ if __name__ == "__main__":
     )
     args.add_argument(
         "--same_seed_ref",
-        type=bool,
         action="store_true",
         help="Use ref models with same seed as target model?",
     )

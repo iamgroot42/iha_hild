@@ -5,7 +5,7 @@ import torch as ch
 import numpy as np
 
 from mi_benchmark.attacks.base import Attack
-from mi_benchmark.attacks.utils import compute_scaled_logit
+from mi_benchmark.attacks.attack_utils import compute_scaled_logit
 
 
 class LOSS(Attack):
