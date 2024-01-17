@@ -12,7 +12,7 @@ import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 
-from mi_benchmark.train import get_model_and_criterion, load_data
+from mib.train import get_model_and_criterion, load_data
 
 
 def gradient_noise_parameters(model, loader_pop, loader_data):

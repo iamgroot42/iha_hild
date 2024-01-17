@@ -8,7 +8,7 @@ import copy
 import numpy as np
 from tqdm import tqdm
 
-from mi_benchmark.train import get_dataset_subset, load_data, get_model_and_criterion
+from mib.train import get_dataset_subset, load_data, get_model_and_criterion
 
 
 def identify_neurons(model, data_batch, num_random: int = 5, noise_scale: float = 0.03):

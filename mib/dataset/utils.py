@@ -1,4 +1,4 @@
-from mi_benchmark.dataset.cifar10 import CIFAR10
+from mib.dataset.cifar10 import CIFAR10
 
 DATASET_MAPPING = {
     "cifar10": CIFAR10

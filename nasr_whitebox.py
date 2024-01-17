@@ -8,7 +8,7 @@ import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 
-from mi_benchmark.train import get_model_and_criterion, load_data, train_model
+from mib.train import get_model_and_criterion, load_data, train_model
 
 
 class MetaClassifier(nn.Module):

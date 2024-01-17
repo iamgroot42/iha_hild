@@ -1,4 +1,4 @@
-from mi_benchmark.models.wide_resnet import Wide_ResNet
+from mib.models.wide_resnet import Wide_ResNet
 
 MODEL_MAPPING = {
     "wide_resnet_cifar": (Wide_ResNet, (28, 2, 10))

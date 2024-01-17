@@ -3,7 +3,7 @@ import numpy as np
 from tqdm import tqdm
 import copy
 
-from mi_benchmark.train import (
+from mib.train import (
     get_dataset_subset,
     get_model_and_criterion,
     load_data,

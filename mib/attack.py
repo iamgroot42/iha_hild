@@ -8,9 +8,9 @@ import torch as ch
 import numpy as np
 from tqdm import tqdm
 
-from mi_benchmark.models.utils import get_model
-from mi_benchmark.dataset.utils import get_dataset
-from mi_benchmark.attacks.utils import get_attack
+from mib.models.utils import get_model
+from mib.dataset.utils import get_dataset
+from mib.attacks.utils import get_attack
 
 
 def main(args):
@@ -63,12 +63,10 @@ def main(args):
         nonmember_index_subset,
     )
 
-    # Make loaders out of mem, non-mem (no shuffle)
-    member_loader = ch.utils.data.DataLoader(
-        member_dset, batch_size=args.batch_size, shuffle=False
-    )
+    # Make loader out of non-mem (no shuffle)
+    member_loader = ch.utils.data.DataLoader(member_dset, batch_size=1, shuffle=False)
     nonmember_loader = ch.utils.data.DataLoader(
-        nonmember_dset, batch_size=args.batch_size, shuffle=False
+        nonmember_dset, batch_size=1, shuffle=False
     )
 
     # For reference-based attacks, train out models
@@ -103,21 +101,49 @@ def main(args):
 
         # For each reference model, look at out_indices and create a 'isin' based 2D bool-map
         # Using train_index_subset
-        out_indices = np.array(out_indices)
+        out_indices = np.array(out_indices, dtype=object)
         member_map = np.zeros((len(out_models), len(train_index_subset)), dtype=bool)
+        nonmember_map = np.zeros(
+            (len(out_models), len(nonmember_index_subset)), dtype=bool
+        )
         for i, out_index in enumerate(out_indices):
             member_map[i] = np.isin(train_index_subset, out_index)
+            nonmember_map[i] = np.isin(nonmember_index_subset, out_index)
+
     else:
         # Shift model to CUDA (won't have ref-based models in memory as well)
         target_model.cuda()
 
     # Compute signals for member data
     signals_in, signals_out = [], []
+    i = 0
     for x, y in tqdm(member_loader):
-        signals_in.append(attacker.compute_scores(x.cuda(), y.cuda()))
+        out_models_use = None
+        if attacker.reference_based:
+            out_models_use = [out_models[j] for j in np.nonzero(member_map[:, i])[0]]
+
+        score = attacker.compute_scores(
+            x, y,
+            out_models=out_models_use,
+            other_data_source=nonmember_dset_ft,
+        )
+        signals_in.append(score)
+        i += 1
+
     # Compute signals for non-member data
+    i = 0
     for x, y in tqdm(nonmember_loader):
-        signals_out.append(attacker.compute_scores(x.cuda(), y.cuda()))
+        out_models_use = None
+        if attacker.reference_based:
+            out_models_use = [out_models[j] for j in np.nonzero(nonmember_map[:, i])[0]]
+
+        score = attacker.compute_scores(
+            x, y,
+            out_models=out_models_use,
+            other_data_source=nonmember_dset_ft,
+        )
+        signals_out.append(score)
+        i += 1
 
     # Save signals
     signals_in = np.concatenate(signals_in, 0)
@@ -142,7 +168,6 @@ if __name__ == "__main__":
     args.add_argument("--model_arch", type=str, default="wide_resnet_cifar")
     args.add_argument("--dataset", type=str, default="cifar10")
     args.add_argument("--attack", type=str, default="LOSS")
-    args.add_argument("--batch_size", type=int, default=16)
     args.add_argument("--exp_seed", type=int, default=2024)
     args.add_argument("--target_model_index", type=int, default=0)
     args.add_argument(

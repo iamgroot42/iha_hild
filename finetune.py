@@ -12,7 +12,7 @@ import torch.nn as nn
 
 from bbeval.config import ExperimentConfig
 
-from mi_benchmark.train import get_model_and_criterion, get_data, train_model
+from mib.train import get_model_and_criterion, get_data, train_model
 
 
 # Create a CustomSampler that always includes some point X in batch, and samples remaining points from other_data_source

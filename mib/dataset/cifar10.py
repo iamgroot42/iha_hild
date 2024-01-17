@@ -1,7 +1,7 @@
 from torchvision import transforms
 import torchvision
 
-from mi_benchmark.dataset.base import Dataset
+from mib.dataset.base import Dataset
 
 
 class CIFAR10(Dataset):

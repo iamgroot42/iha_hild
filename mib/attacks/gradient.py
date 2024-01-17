@@ -2,8 +2,8 @@
     Attack based on gradient norm.
 """
 import numpy as np
-from mi_benchmark.attacks.base import Attack
-from mi_benchmark.attacks.attack_utils import compute_gradient_norm
+from mib.attacks.base import Attack
+from mib.attacks.attack_utils import compute_gradients
 
 
 class GradientNorm(Attack):
@@ -14,11 +14,12 @@ class GradientNorm(Attack):
     def __init__(self, model):
         super().__init__("GradientNorm", model, whitebox=True)
 
-    def compute_scores(self, x, y) -> np.ndarray:
+    def compute_scores(self, x, y, **kwargs) -> np.ndarray:
+        x, y = x.cuda(), y.cuda()
         scores = []
         for x_, y_ in zip(x, y):
-            gradients = compute_gradient_norm(self.model, self.criterion, x_, y_)
+            gradients = compute_gradients(self.model, self.criterion, x_.unsqueeze(0), y_.unsqueeze(0))
             # Get norm of gradient
             norm = np.linalg.norm(gradients)
-            scores.append(norm)
+            scores.append(-norm)
         return np.array(scores)

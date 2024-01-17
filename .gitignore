@@ -11,6 +11,6 @@ cifar-10-batches-py/*
 
 *.egg-info/*
 
-mi_benchmark/__pycache__/*
-mi_benchmark/*/__pycache__/*
-mi_benchmark/cifar-10-batches-py/*
+mib/__pycache__/*
+mib/*/__pycache__/*
+mib/cifar-10-batches-py/*

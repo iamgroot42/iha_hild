@@ -2,9 +2,9 @@ import numpy as np
 import torch as ch
 
 
-def compute_gradient_norm(model, criterion, a, b) -> np.ndarray:
+def compute_gradients(model, criterion, a, b) -> np.ndarray:
     """
-    Compute gradient norm of model given datapoint (a, b)
+    Compute gradients of model given datapoint (a, b)
     """
     model.zero_grad()
     pred = model(a)
@@ -36,3 +36,24 @@ def compute_scaled_logit(model, x, y) -> np.ndarray:
     eps = 1e-45
     logit = ch.log(y_true + eps) - ch.log(y_wrong + eps)
     return logit.cpu().numpy()
+
+
+# Create a CustomSampler that always includes some point X in batch, and samples remaining points from other_data_source
+class SpecificPointIncludedLoader:
+    def __init__(self, given_loader, interest_point, num_batches: int):
+        self.given_loader = given_loader
+        self.interest_point = interest_point
+        self.num_batches = num_batches
+
+    def __iter__(self):
+        for _ in range(self.num_batches):
+            x, y = next(iter(self.given_loader))
+            # x, y are torch tensors
+            # append x, y into these tensors
+            x = ch.cat([x, self.interest_point[0].unsqueeze(0)])
+            y = ch.cat([y, ch.tensor([self.interest_point[1]])])
+            batch = (x, y)
+            yield batch
+
+    def __len__(self):
+        return self.num_batches

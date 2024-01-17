@@ -21,7 +21,7 @@ class Attack(object):
         self.reference_based = reference_based
         self.criterion = ch.nn.CrossEntropyLoss(reduction="none")
 
-    def compute_scores(self, x, y) -> np.ndarray:
+    def compute_scores(self, x, y, **kwargs) -> np.ndarray:
         """
         Compute the score of the attack. Must be implemented by child class.
         """

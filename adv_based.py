@@ -22,7 +22,7 @@ from bbeval.attacker.transfer_methods._manipulate_input import (
 from bbeval.config import AttackerConfig, ExperimentConfig
 from bbeval.attacker.transfer_methods.SMIMIFGSM import SMIMIFGSM
 
-from mi_benchmark.train import get_model_and_criterion, load_data
+from mib.train import get_model_and_criterion, load_data
 from tqdm import tqdm
 
 from autoattack import AutoAttack

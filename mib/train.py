@@ -9,7 +9,7 @@ import copy
 import torchvision
 from torchvision import transforms
 
-from mi_benchmark.models.wide_resnet import Wide_ResNet
+from mib.models.wide_resnet import Wide_ResNet
 
 
 def get_data(
@@ -300,6 +300,11 @@ def main(save_dir: str, n_models: int = 1):
     device = "cuda"
 
     for i in range(n_models):
+        # Skip if model already exists
+        if os.path.exists(f"{save_dir}/{i}.pt"):
+            print("Skipping model", i)
+            continue
+
         # Get model
         model, criterion = get_model_and_criterion(dataset, device=device)
         model_init = copy.deepcopy(model.state_dict())
@@ -338,4 +343,4 @@ def main(save_dir: str, n_models: int = 1):
 
 
 if __name__ == "__main__":
-    main("/u/as9rw/work/auditing_mi/models", 16)
+    main("/u/as9rw/work/auditing_mi/models", 64)

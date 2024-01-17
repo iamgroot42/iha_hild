@@ -4,8 +4,8 @@
 import torch as ch
 import numpy as np
 
-from mi_benchmark.attacks.base import Attack
-from mi_benchmark.attacks.attack_utils import compute_scaled_logit
+from mib.attacks.base import Attack
+from mib.attacks.attack_utils import compute_scaled_logit
 
 
 class LOSS(Attack):
@@ -17,9 +17,9 @@ class LOSS(Attack):
         super().__init__("LOSS", model)
 
     @ch.no_grad()
-    def compute_scores(self, x, y) -> np.ndarray:
-        loss = self.criterion(self.model(x).detach(), y)
-        return loss.cpu().numpy()
+    def compute_scores(self, x, y, **kwargs) -> np.ndarray:
+        loss = self.criterion(self.model(x.cuda()).detach(), y.cuda())
+        return -loss.cpu().numpy()
 
 
 class Logit(Attack):
@@ -31,5 +31,5 @@ class Logit(Attack):
         super().__init__("LOSS_LiRA", model)
 
     @ch.no_grad()
-    def compute_scores(self, x, y) -> np.ndarray:
-        return compute_scaled_logit(self.model, x, y)
+    def compute_scores(self, x, y, **kwargs) -> np.ndarray:
+        return compute_scaled_logit(self.model, x.cuda(), y.cuda())
