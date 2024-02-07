@@ -11,6 +11,7 @@ import torchvision
 from torchvision import transforms
 
 from mib.models.utils import get_model
+from mib.utils import get_models_path
 
 
 def get_data(
@@ -251,6 +252,12 @@ def train_model(
     if test_loader:
         print("Best test accuracy: ", max(model_accs))
 
+    # < 1 epoch training, likely for FT attack
+    if len(model_ckpts) == 0:
+        model.eval()
+        model.cpu()
+        return model
+
     if best_n == 1:
         return model_ckpts[0], model_accs[0], model_losses[0]
     return model_ckpts, model_accs, model_losses
@@ -305,6 +312,9 @@ def main(save_dir: str, args):
     save_dir_use = save_dir
     if same_init is not None:
         save_dir_use = f"{save_dir_use}/same_init/{same_init}"
+
+    if args.best_n != 1:
+        save_dir_use = os.path.join(save_dir_use, f"best_{args.best_n}")
 
     num_trained = 0
     for i in range(n_models):
@@ -371,10 +381,6 @@ def main(save_dir: str, args):
                 f"{save_dir_use}/{i}.pt",
             )
         else:
-            # Make sure folder directory exists
-            subdir = os.path.join(save_dir_use, f"best_{args.best_n}")
-            os.makedirs(subdir, exist_ok=True)
-
             for j, (m, acc, l) in enumerate(zip(model, best_acc, best_loss)):
                 ch.save(
                     {
@@ -385,7 +391,7 @@ def main(save_dir: str, args):
                         "loss": l,
                         "acc": acc,
                     },
-                    f"{subdir}/{i}_{j+1}.pt",
+                    f"{save_dir_use}/{i}_{j+1}.pt",
                 )
 
         # Break if we have trained enough models
@@ -413,4 +419,5 @@ if __name__ == "__main__":
     if args.best_n < 1:
         raise ValueError("best_n must be >= 1")
 
-    main(f"/u/as9rw/work/auditing_mi/models/{args.model_arch}", args)
+    save_dir = get_models_path()
+    main(os.path.join(save_dir, args.model_arch), args)

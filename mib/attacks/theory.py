@@ -15,7 +15,7 @@ class TheoryRef(Attack):
     """
 
     def __init__(self, model):
-        super().__init__("TheoryRef", model, reference_based=True)
+        super().__init__("TheoryRef", model, reference_based=True, requires_trace=True, whitebox=True)
 
     def register_trace(self, trace):
         self.trace = trace

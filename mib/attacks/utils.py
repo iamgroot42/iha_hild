@@ -2,7 +2,7 @@
     Helper functions for attacks
 """
 from mib.attacks.loss import LOSS, Logit, LOSSSmooth
-from mib.attacks.lira import LiRAOffline, LiRAOnline
+from mib.attacks.lira import LiRAOffline, LiRAOnline, LiRAOnlineSmooth
 from mib.attacks.unlearn import Unlearning
 from mib.attacks.gradient import GradientNorm
 from mib.attacks.adv import SDFNorm, AutoAttackNorm
@@ -16,6 +16,7 @@ ATTACK_MAPPING = {
     "Logit": Logit,
     "LiRAOffline": LiRAOffline,
     "LiRAOnline": LiRAOnline,
+    "LiRAOnlineSmooth": LiRAOnlineSmooth,
     "UnlearnGradNorm": Unlearning,
     "GradNorm": GradientNorm,
     "SDFNorm": SDFNorm,

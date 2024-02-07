@@ -26,7 +26,7 @@ def member_nonmember_loaders(
     train_data,
     train_idx,
     args,
-    num_train_points: int,
+    num_nontrain_pool: int = None,
     batch_size: int = 1,
     want_all_member_nonmember: bool = False,
 ):
@@ -44,15 +44,15 @@ def member_nonmember_loaders(
     # Sample non-members
     np.random.seed(args.exp_seed + 1)
     nonmember_indices = np.random.choice(
-        other_indices_train, num_train_points, replace=False
+        other_indices_train, num_nontrain_pool, replace=False
     )
 
     if want_all_member_nonmember:
         nonmember_index_subset = nonmember_indices
     else:
         # Break nonmember_indices here into 2 - one for sprinkling in FT data, other for actual non-members
-        nonmember_indices_ft = nonmember_indices[: num_train_points // 2]
-        nonmember_indices_test = nonmember_indices[num_train_points // 2 :]
+        nonmember_indices_ft = nonmember_indices[: num_nontrain_pool // 2]
+        nonmember_indices_test = nonmember_indices[num_nontrain_pool // 2 :]
 
         nonmember_dset_ft = ch.utils.data.Subset(train_data, nonmember_indices_ft)
 
@@ -103,7 +103,7 @@ def main(args):
     # TODO: Get these stats from a dataset class
     ds = get_dataset(args.dataset)(augment=False)
     # CIFAR
-    num_train_points = 10000
+    num_nontrain_pool = 10000
 
     # Get data
     train_data = ds.get_train_data()
@@ -118,21 +118,37 @@ def main(args):
         train_data,
         train_index,
         args,
-        num_train_points,
+        num_nontrain_pool,
     )
 
     # For reference-based attacks, train out models
     attacker = get_attack(args.attack)(target_model)
+
+    # Register trace if required
+    if attacker.requires_trace:
+        # Compute and add trace value to model
+        mem_loader_, nonmem_loader_ = member_nonmember_loaders(
+            train_data,
+            train_index,
+            args,
+            num_nontrain_pool=5000,
+            want_all_member_nonmember=True,
+            batch_size=256,
+        )
+        model_trace = compute_trace(target_model, mem_loader_, nonmem_loader_)
+        # Trace business (for theory-based attack)
+        attacker.register_trace(model_trace)
 
     if attacker.reference_based:
         ref_models, ref_indices = [], []
 
         if args.same_seed_ref:
             folder_to_look_in = os.path.join(model_dir, f"same_init/{args.target_model_index}")
-        elif args.specific_ref_folder is not None:
-            folder_to_look_in = os.path.join(model_dir, args.specific_ref_folder)
         else:
             folder_to_look_in = model_dir
+
+        if args.specific_ref_folder is not None:
+            folder_to_look_in = os.path.join(folder_to_look_in, args.specific_ref_folder)
 
         # Look specifically inside folder corresponding to this model's seed
         for m in os.listdir(folder_to_look_in):
@@ -141,8 +157,8 @@ def main(args):
                 continue
 
             # Skip ref model if trained on exact same data split as target model
-            if m.split(".pt")[0].split("_")[0] == f"{args.target_model_index}":
-                continue
+            # if m.split(".pt")[0].split("_")[0] == f"{args.target_model_index}":
+            #    continue
 
             model, _, _ = get_model(args.model_arch, 10)
             state_dict = ch.load(os.path.join(folder_to_look_in, m))
@@ -166,28 +182,24 @@ def main(args):
         # Shift model to CUDA (won't have ref-based models in memory as well)
         target_model.cuda()
 
-    """
-    # Compute and add trace value to model
-    model_trace = compute_trace(target_model, member_loader, nonmember_loader)
-    # Trace business (for theory-based attack)
-    attacker.register_trace(model_trace)
-    ref_traces = []
-    for m, ids in tqdm(
-        zip(ref_models, ref_indices), desc="Computing traces", total=len(ref_models)
-    ):
-        # Get in, out loaders corresponding to these models
-        mem_loader, nonmem_loader = member_nonmember_loaders(
-            train_data,
-            ids,
-            args,
-            num_train_points=num_train_points,
-            want_all_member_nonmember=True,
-            batch_size=256,
-        )
-        # Get traces corresponding to these models
-        ref_trace = compute_trace(m, mem_loader, nonmem_loader)
-        ref_traces.append(ref_trace)
-    """
+    if attacker.requires_trace:
+        ref_traces = []
+        for m, ids in tqdm(
+            zip(ref_models, ref_indices), desc="Computing traces", total=len(ref_models)
+        ):
+            # Get in, out loaders corresponding to these models
+            mem_loader, nonmem_loader = member_nonmember_loaders(
+                train_data,
+                ids,
+                args,
+                # num_train_points=num_train_points,
+                num_nontrain_pool=5000,
+                want_all_member_nonmember=True,
+                batch_size=256,
+            )
+            # Get traces corresponding to these models
+            ref_trace = compute_trace(m, mem_loader, nonmem_loader)
+            ref_traces.append(ref_trace)
 
     # Compute signals for member data
     signals_in, signals_out = [], []
@@ -195,18 +207,18 @@ def main(args):
     for x, y in tqdm(member_loader):
         out_models_use = None
         in_models_use = None
+        out_traces_use = None
         if attacker.reference_based:
-            out_models_use = [
-                ref_models[j] for j in np.nonzero(1 - member_map[:, i])[0][:]
-            ]
+            out_models_use = [ref_models[j] for j in np.nonzero(1 - member_map[:, i])[0][:]]
             in_models_use = [ref_models[j] for j in np.nonzero(member_map[:, i])[0]]
-            # out_traces_use = [ref_traces[j] for j in np.nonzero(1 - member_map[:, i])[0]]
             # in_traces_use = [ref_traces[j] for j in np.nonzero(member_map[:, i])[0]]
             if args.num_ref_models is not None:
                 out_models_use = out_models_use[: args.num_ref_models]
                 in_models_use = in_models_use[: args.num_ref_models]
-                # out_traces_use = out_traces_use[: args.num_ref_models]
                 # in_traces_use = in_traces_use[: args.num_ref_models]
+                if attacker.requires_trace:
+                    out_traces_use = [ref_traces[j] for j in np.nonzero(1 - member_map[:, i])[0]]
+                    out_traces_use = out_traces_use[: args.num_ref_models]
 
         score = attacker.compute_scores(
             x,
@@ -214,7 +226,7 @@ def main(args):
             out_models=out_models_use,
             in_models=in_models_use,
             other_data_source=nonmember_dset_ft,
-            # out_traces=out_traces_use,
+            out_traces=out_traces_use,
         )
         signals_in.append(score)
         i += 1
@@ -224,18 +236,18 @@ def main(args):
     for x, y in tqdm(nonmember_loader):
         out_models_use = None
         in_models_use = None
+        out_traces_use = None
         if attacker.reference_based:
-            out_models_use = [
-                ref_models[j] for j in np.nonzero(1 - nonmember_map[:, i])[0]
-            ]
+            out_models_use = [ref_models[j] for j in np.nonzero(1 - nonmember_map[:, i])[0]]
             in_models_use = [ref_models[j] for j in np.nonzero(nonmember_map[:, i])[0]]
-            # out_traces_use = [ref_traces[j] for j in np.nonzero(1 - nonmember_map[:, i])[0]]
             # in_traces_use = [ref_traces[j] for j in np.nonzero(nonmember_map[:, i])[0]]
             if args.num_ref_models is not None:
                 out_models_use = out_models_use[: args.num_ref_models]
                 in_models_use = in_models_use[: args.num_ref_models]
-                # out_traces_use = out_traces_use[: args.num_ref_models]
                 # in_traces_use = in_traces_use[: args.num_ref_models]
+                if attacker.requires_trace:
+                    out_traces_use = [ref_traces[j] for j in np.nonzero(1 - nonmember_map[:, i])[0]]
+                    out_traces_use = out_traces_use[: args.num_ref_models]
 
         score = attacker.compute_scores(
             x,
@@ -243,7 +255,7 @@ def main(args):
             out_models=out_models_use,
             in_models=in_models_use,
             other_data_source=nonmember_dset_ft,
-            # out_traces=out_traces_use,
+            out_traces=out_traces_use,
         )
         signals_out.append(score)
         i += 1

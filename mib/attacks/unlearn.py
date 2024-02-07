@@ -51,7 +51,7 @@ class Unlearning(Attack):
 
             # Fine-tune model
             model_.cuda()
-            model_, _, _ = train_model(
+            model_ = train_model(
                 model_,
                 criterion,
                 loader,
@@ -71,9 +71,9 @@ class Unlearning(Attack):
             )
 
             # For now, look at difference in gradient norms
-            score = np.linalg.norm(signals_after["grads"]) - np.linalg.norm(
-                signals_before["grads"]
-            )
+            score = np.linalg.norm(signals_after["grads"]) - np.linalg.norm(signals_before["grads"])
+            # Closer to zero -> more likely member
+            score = np.exp(-np.abs(score))
             scores.append(score)
 
         return np.array(scores)

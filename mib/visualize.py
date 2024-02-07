@@ -16,6 +16,8 @@ plt.rcParams["font.family"] = "Times New Roman"
 
 def main(args):
     signals_path = os.path.join(get_signals_path(), str(args.model_index))
+
+    info = {}
     for attack in os.listdir(signals_path):
         attack_name = attack.split(".")[0]
         if attack_name == "ReferenceSmooth_4_ref":
@@ -26,27 +28,23 @@ def main(args):
         signals_out = data["out"]
         total_labels = [0] * len(signals_out) + [1] * len(signals_in)
 
-        # best_auc = 0
-        # best_multiplier = 1.0
-        # # for multiplier in np.linspace(0.0, 1., 100):
-        # for multiplier in [1.]:
-        #     signals_in_ = signals_in[:, 0] - multiplier * signals_in[:, 1]
-        #     signals_out_ = signals_out[:, 0] - multiplier * signals_out[:, 1]
-
-        #     total_preds = np.concatenate((signals_out_, signals_in_))
-        #     fpr, tpr, thresholds = roc_curve(total_labels, total_preds)
-        #     roc_auc = auc(fpr, tpr)
-        #     if roc_auc > best_auc:
-        #         best_auc = roc_auc
-        #         best_multiplier = multiplier
-        # print("%.3f  | %.3f" % (best_multiplier, best_auc))
-        # exit(0)
-
         total_preds = np.concatenate((signals_out, signals_in))
         fpr, tpr, thresholds = roc_curve(total_labels, total_preds)
         roc_auc = auc(fpr, tpr)
         plt.plot(fpr, tpr, label="%s (AUC = %0.3f)" % (attack_name, roc_auc))
-        print("%s | AUC = %0.3f" % (attack_name, roc_auc))
+
+        tpr_at_low_fpr = lambda x: tpr[np.where(np.array(fpr) < x)[0][-1]]
+        info_ = {
+            "roc_auc": roc_auc,
+            "tpr@0.1fpr": tpr_at_low_fpr(0.1),
+            "tpr@0.01fpr": tpr_at_low_fpr(0.01)
+        }
+        info[attack_name] = info_
+
+        print(
+            "%s | AUC = %0.3f | TPR@0.1FPR=%0.3f | TPR@0.01FPR=%0.3f"
+            % (attack_name, roc_auc, info_["tpr@0.1fpr"], info_["tpr@0.01fpr"])
+        )
 
     # Make sure plot directory exists
     if not os.path.exists(args.plotdir):
