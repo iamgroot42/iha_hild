@@ -50,17 +50,20 @@ class SDFNorm(Attack):
         return norm_diff
 
 
-class AutoAttack(Attack):
+class AutoAttackNorm(Attack):
     """
     Measure perturbation norm using AutoAttack.
     """
 
-    def __init__(self, model, norm="Linf"):
+    def __init__(self, model):
         super().__init__("SDF-Norm", model, whitebox=True)
-        self.norm = norm
 
-    def compute_scores(self, x, y) -> np.ndarray:
-        adversary = AutoAttack(self.model, norm=self.norm, eps=1, version="standard")
+    def compute_scores(self, x, y, **kwargs) -> np.ndarray:
+        norm = kwargs.get("norm", "inf")
+        x, y = x.cuda(), y.cuda()
+
+        adversary = AutoAttack(self.model, norm='L' + str(norm),
+                               eps=1, version="standard", verbose=False)
         norms = []
         for x_, y_ in tqdm(
             zip(x, y), desc="Computing AutoAttack signals", total=len(x)
@@ -69,6 +72,6 @@ class AutoAttack(Attack):
             adv = adversary.run_standard_evaluation(
                 x_.unsqueeze(0), y_.unsqueeze(0), bs=1
             )
-            diff = ch.norm(adv - x_, p=float(self.norm)).cpu().item()
+            diff = ch.norm(adv - x_, p=float(norm)).cpu().item()
             norms.append(diff)
         return np.array(norms)

@@ -1,5 +1,7 @@
 import numpy as np
 
+from mib.utils import get_data_source
+
 
 class Dataset:
     def __init__(self, name, train, test, num_classes: int):
@@ -7,13 +9,14 @@ class Dataset:
         self.train = train
         self.test = test
         self.num_classes = num_classes
-    
+        self.data_root = get_data_source()
+
     def get_train_data(self):
         return self.train
-    
+
     def get_test_data(self):
         return self.test
-    
+
     def get_data(self):
         return self.get_train_data(), self.get_test_data()
 

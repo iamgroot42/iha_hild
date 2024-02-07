@@ -5,11 +5,12 @@ import torchvision
 import numpy as np
 from tqdm import tqdm
 import torch as ch
+import argparse
 import copy
 import torchvision
 from torchvision import transforms
 
-from mib.models.wide_resnet import Wide_ResNet
+from mib.models.utils import get_model
 
 
 def get_data(
@@ -55,11 +56,15 @@ def get_data(
 
     train_data = torchvision.datasets.CIFAR10(
         root="/u/as9rw/work/auditing_mi",
-        train=True, download=True, transform=transforms_train
+        train=True,
+        download=True,
+        transform=transforms_train,
     )
     test_data = torchvision.datasets.CIFAR10(
         root="/u/as9rw/work/auditing_mi",
-        train=False, download=True, transform=transforms_test
+        train=False,
+        download=True,
+        transform=transforms_test,
     )
 
     if just_want_data:
@@ -114,22 +119,16 @@ def load_data(num_train_points: int, num_test_points: int):
 """
 
 
-def get_model_and_criterion(dataset_name: str, device: str = "cuda"):
-    m = Wide_ResNet(28, 2, 10)
-    m.to(device)
-    return m, nn.CrossEntropyLoss()
-
-
-def get_loader(dataset, indices, batch_size: int, start_seed: int = 42):
-    num_workers = 4
+def get_loader(dataset, indices, batch_size: int, start_seed: int = 42, shuffle: bool = True):
+    num_workers = 2
     loader = ch.utils.data.DataLoader(
         ch.utils.data.Subset(dataset, indices),
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=True,
-        prefetch_factor=16,
+        prefetch_factor=2,
         worker_init_fn=lambda worker_id: np.random.seed(start_seed + worker_id),
     )
     return loader
@@ -154,8 +153,8 @@ def train_model(
     verbose: bool = True,
     weight_decay: float = 5e-4,
     loss_multiplier: float = 1.0,
+    best_n: int = 1
 ):
-    best_model, best_acc, best_loss = copy.deepcopy(model), 0, np.inf
     model.train()
 
     # Set the loss function and optimizer
@@ -170,6 +169,7 @@ def train_model(
     if verbose:
         iterator = tqdm(iterator)
 
+    model_ckpts, model_losses, model_accs = [], [], []
     for epoch_idx in iterator:
         model.train()
         train_loss = 0
@@ -228,10 +228,17 @@ def train_model(
             test_acc, test_loss = evaluate_model(
                 model, test_loader, criterion, device=device
             )
-            if test_loss < best_loss:
-                best_loss = test_loss
-                best_model = copy.deepcopy(model)
-                best_acc = test_acc
+            if len(model_ckpts) < best_n:
+                model_ckpts.append(copy.deepcopy(model).cpu())
+                model_losses.append(test_loss)
+                model_accs.append(test_acc)
+            else:
+                if test_loss < max(model_losses):
+                    # Kick out the model with the highest loss
+                    idx = np.argmax(model_losses)
+                    model_ckpts[idx] = copy.deepcopy(model).cpu()
+                    model_losses[idx] = test_loss
+                    model_accs[idx] = test_acc
 
         if verbose:
             iterator.set_description(
@@ -241,15 +248,12 @@ def train_model(
         # Scheduler step
         scheduler.step()
 
-    if not test_loader:
-        best_model = model
-    else:
-        print("Best test accuracy: ", best_acc)
+    if test_loader:
+        print("Best test accuracy: ", max(model_accs))
 
-    # Move the model back to the CPU to save memory
-    best_model.to("cpu")
-
-    return best_model, best_acc, best_loss
+    if best_n == 1:
+        return model_ckpts[0], model_accs[0], model_losses[0]
+    return model_ckpts, model_accs, model_losses
 
 
 @ch.no_grad()
@@ -284,30 +288,48 @@ def evaluate_model(model, test_loader, criterion, device="cuda"):
     return acc, loss
 
 
-def main(save_dir: str, n_models: int = 1):
+def main(save_dir: str, args):
+    n_models = args.num_models
+    same_init = args.init_ref
     # Follow setup of LiRA
     # 50% of data is used for training model
     # Other 50% used to train quantile model, and also serve as non-members
 
     # CIFAR
     pkeep = 0.5
-    batch_size = 256  # 64
-    learning_rate = 0.1  # 0.001
-    epochs = 100
 
     # Train target model
     dataset = "CIFAR10"
     device = "cuda"
 
+    save_dir_use = save_dir
+    if same_init is not None:
+        save_dir_use = f"{save_dir_use}/same_init/{same_init}"
+
+    num_trained = 0
     for i in range(n_models):
         # Skip if model already exists
-        if os.path.exists(f"{save_dir}/{i}.pt"):
+        if os.path.exists(f"{save_dir_use}/{i}.pt"):
             print("Skipping model", i)
             continue
 
         # Get model
-        model, criterion = get_model_and_criterion(dataset, device=device)
-        model_init = copy.deepcopy(model.state_dict())
+        model, criterion, hparams = get_model(args.model_arch, n_classes=10)
+        model.to(device)
+        batch_size = hparams["batch_size"]
+        learning_rate = hparams["learning_rate"]
+        epochs = hparams["epochs"]
+
+        if same_init is not None:
+            # Use same initialization as model with index same_init
+            model_init = ch.load(f"{save_dir}/{same_init}.pt")["model_init"]
+            model.load_state_dict(model_init)
+            model.to(device)
+        else:
+            # Random initialization
+            model_init = copy.deepcopy(model.state_dict())
+
+        # Compile model (Faster training)
         model = ch.compile(model)
 
         # Get data
@@ -323,24 +345,72 @@ def main(save_dir: str, n_models: int = 1):
 
         # Train model
         model, best_acc, best_loss = train_model(
-            model, criterion, train_loader, test_loader, learning_rate, epochs
+            model,
+            criterion,
+            train_loader,
+            test_loader,
+            learning_rate,
+            epochs,
+            best_n=args.best_n,
         )
 
         # Make sure folder directory exists
-        os.makedirs(save_dir, exist_ok=True)
-        # Save model dictionary, along with information about train_index and test_index
-        ch.save(
-            {
-                "model_init": model_init,
-                "model": model._orig_mod.state_dict(),
-                "train_index": train_index,
-                "test_index": test_index,
-                "loss": best_loss,
-                "acc": best_acc,
-            },
-            f"{save_dir}/{i}.pt",
-        )
+        os.makedirs(save_dir_use, exist_ok=True)
+
+        if args.best_n == 1:
+            # Save model dictionary, along with information about train_index and test_index
+            ch.save(
+                {
+                    "model_init": model_init,
+                    "model": model._orig_mod.state_dict(),
+                    "train_index": train_index,
+                    "test_index": test_index,
+                    "loss": best_loss,
+                    "acc": best_acc,
+                },
+                f"{save_dir_use}/{i}.pt",
+            )
+        else:
+            # Make sure folder directory exists
+            subdir = os.path.join(save_dir_use, f"best_{args.best_n}")
+            os.makedirs(subdir, exist_ok=True)
+
+            for j, (m, acc, l) in enumerate(zip(model, best_acc, best_loss)):
+                ch.save(
+                    {
+                        "model_init": model_init,
+                        "model": m._orig_mod.state_dict(),
+                        "train_index": train_index,
+                        "test_index": test_index,
+                        "loss": l,
+                        "acc": acc,
+                    },
+                    f"{subdir}/{i}_{j+1}.pt",
+                )
+
+        # Break if we have trained enough models
+        num_trained += 1
+        if num_trained >= args.num_train:
+            break
 
 
 if __name__ == "__main__":
-    main("/u/as9rw/work/auditing_mi/models", 64)
+    args = argparse.ArgumentParser()
+    args.add_argument("--model_arch", type=str, default="wide_resnet_28_2")
+    args.add_argument("--num_models", type=int, default=128, help="Total number of models (data splits will be created accordingly)")
+    args.add_argument("--num_train", type=int, default=128, help="Number of models to train (out of num_models)")
+    args.add_argument("--best_n", type=int, default=1, help="Of all checkpoints, keep the best n.")
+    args.add_argument(
+        "--init_ref",
+        type=int,
+        default=None,
+        help="If not None, use same initialization as model with this index",
+    )
+    args = args.parse_args()
+
+    if args.num_train > args.num_models:
+        raise ValueError("num_train cannot be greater than num_models")
+    if args.best_n < 1:
+        raise ValueError("best_n must be >= 1")
+
+    main(f"/u/as9rw/work/auditing_mi/models/{args.model_arch}", args)

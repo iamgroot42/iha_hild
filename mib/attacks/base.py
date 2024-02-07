@@ -13,13 +13,15 @@ class Attack(object):
     """
 
     def __init__(
-        self, name: str, model, whitebox: bool = False, reference_based: bool = False
+        self, name: str, model, whitebox: bool = False, reference_based: bool = False,
+        label_smoothing: float = 0.0,
     ):
         self.name = name
         self.model = model
         self.whitebox = whitebox
         self.reference_based = reference_based
-        self.criterion = ch.nn.CrossEntropyLoss(reduction="none")
+        self.label_smoothing = label_smoothing
+        self.criterion = ch.nn.CrossEntropyLoss(reduction="none", label_smoothing=self.label_smoothing)
 
     def compute_scores(self, x, y, **kwargs) -> np.ndarray:
         """
