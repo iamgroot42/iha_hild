@@ -20,6 +20,16 @@ class TheoryRef(Attack):
     def register_trace(self, trace):
         self.trace = trace
 
+    def _log_sum_exp_trick(self, losses, traces):
+        """
+        We want to compute the following:
+        log(1 / len(traces) * sum(exp(-losses * traces)))
+        Use numerical stability trick by adding max(loss * trace) into all terms. Reduces to
+        -max_term - log(len(traces)) + log(sum(exp(-losses * traces + max_term)))
+        """
+        max_term = np.max(losses * traces)
+        return - (max_term + np.log(len(traces))) + np.log(np.sum(np.exp((-losses * traces) + max_term)))
+
     @ch.no_grad()
     def compute_scores(self, x, y, **kwargs) -> np.ndarray:
         x, y = x.cuda(), y.cuda()
@@ -36,11 +46,12 @@ class TheoryRef(Attack):
             out_model.cuda()
             loss = self.criterion(out_model(x).detach(), y).cpu().numpy()
             out_model.cpu()
-            scaled_loss = loss * out_trace
-            losses.append(scaled_loss)
-        ref_factor = np.mean(losses, 0)
+            losses.append(loss)
+        losses = np.array(losses)
+
+        scaling_term = 0
         if len(losses) == 0:
-            ref_factor = 0
+            scaling_term = self._log_sum_exp_trick(losses, out_traces)
 
         self.model.cuda()
         current_score = (
@@ -48,7 +59,7 @@ class TheoryRef(Attack):
         )
         self.model.cpu()
 
-        scores = -(current_score - ref_factor)
+        scores = -(current_score - scaling_term)
         return scores
 
 
@@ -112,9 +123,12 @@ def compute_trace(model, train_loader, test_loader,
     if shift_model:
         model.cpu()
 
-    # Scale with learning rate
-    eps = 1e-18
-    trace_value = ch.sum(1 / (m2 - m1**2 + eps))
+    trace_value = (m2 - m1 ** 2)
+    eps = 1e-10
+    # Ignore entries where |m1 - m2| < eps
+    trace_value = trace_value[ch.abs(trace_value) > eps]
+    trace_value = ch.sum(1 / trace_value)
+
     # Scale with dimensionality
     trace_value /= len(m1)
     if get_m1_m2:

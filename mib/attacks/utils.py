@@ -3,11 +3,12 @@
 """
 from mib.attacks.loss import LOSS, Logit, LOSSSmooth
 from mib.attacks.lira import LiRAOffline, LiRAOnline, LiRAOnlineSmooth
-from mib.attacks.unlearn import Unlearning
+from mib.attacks.unlearn import Unlearning, UnlearningAct
 from mib.attacks.gradient import GradientNorm
 from mib.attacks.adv import SDFNorm, AutoAttackNorm
 from mib.attacks.theory import TheoryRef
-from mib.attacks.reference import Reference, ReferenceSmooth
+from mib.attacks.reference import Reference, ReferenceSmooth, ReferenceAlex
+from mib.attacks.activations import Activations, ActivationsOffline
 
 
 ATTACK_MAPPING = {
@@ -18,12 +19,16 @@ ATTACK_MAPPING = {
     "LiRAOnline": LiRAOnline,
     "LiRAOnlineSmooth": LiRAOnlineSmooth,
     "UnlearnGradNorm": Unlearning,
+    "UnlearningAct": UnlearningAct,
     "GradNorm": GradientNorm,
     "SDFNorm": SDFNorm,
     "AutoAttackNorm": AutoAttackNorm,
     "TheoryRef": TheoryRef,
     "Reference": Reference,
     "ReferenceSmooth": ReferenceSmooth,
+    "ReferenceAlex": ReferenceAlex,
+    "Activations": Activations,
+    "ActivationsOffline": ActivationsOffline,
 }
 
 

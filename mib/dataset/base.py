@@ -10,6 +10,12 @@ class Dataset:
         self.test = test
         self.num_classes = num_classes
         self.data_root = get_data_source()
+    
+    def get_augmented_input(self, x, y):
+        """
+        Returns augmented input for the given input and label. Useful for attacks that utilize augmented inputs as multiple "queries"
+        """
+        raise NotImplementedError(f"{self.name} does not support augmentation")
 
     def get_train_data(self):
         return self.train

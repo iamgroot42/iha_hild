@@ -53,7 +53,7 @@ class wide_basic(nn.Module):
 
 class Wide_ResNet(nn.Module):
     def __init__(self, depth: int, widen_factor: int, num_classes: int):
-        super(Wide_ResNet, self).__init__()
+        super().__init__()
         self.in_planes = 16
 
         assert (depth - 4) % 6 == 0, "Wide-resnet depth should be 6n+4"
@@ -85,16 +85,27 @@ class Wide_ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward(self, x, layer_readout: int = None):
         out = self.conv1(x)
+        if layer_readout == 0:
+            return out
         out = self.layer1(out)
+        if layer_readout == 1:
+            return out
         out = self.layer2(out)
+        if layer_readout == 2:
+            return out
         out = self.layer3(out)
+        if layer_readout == 3:
+            return out
         out = F.relu(self.bn1(out))
+        if layer_readout == 4:
+            return out
         out = F.avg_pool2d(out, 8)
         out = out.view(out.size(0), -1)
+        if layer_readout == 5:
+            return out
         out = self.linear(out)
-
         return out
 
 

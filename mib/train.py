@@ -154,9 +154,19 @@ def train_model(
     verbose: bool = True,
     weight_decay: float = 5e-4,
     loss_multiplier: float = 1.0,
-    best_n: int = 1
+    pick_n: int = 1,
+    pick_mode: str = "best",
 ):
     model.train()
+
+    if pick_mode not in ["best", "last"]:
+        raise ValueError("pick_mode must be 'best' or 'last'")
+
+    n_track = pick_n
+    if pick_mode == "last":
+        # Works by setting a high value for pick_n (epochs // 4) and from these
+        # Pick the models with pick_n-worst loss models
+        n_track == epochs // 4
 
     # Set the loss function and optimizer
     # optimizer = ch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -229,7 +239,7 @@ def train_model(
             test_acc, test_loss = evaluate_model(
                 model, test_loader, criterion, device=device
             )
-            if len(model_ckpts) < best_n:
+            if len(model_ckpts) < n_track:
                 model_ckpts.append(copy.deepcopy(model).cpu())
                 model_losses.append(test_loss)
                 model_accs.append(test_acc)
@@ -251,6 +261,13 @@ def train_model(
 
     if test_loader:
         print("Best test accuracy: ", max(model_accs))
+    
+    if pick_mode == "last":
+        # Of all models selected, pick the n_pick worst models
+        idxs = np.argsort(model_losses)[::-1][:pick_n]
+        model_ckpts = [model_ckpts[i] for i in idxs]
+        model_losses = [model_losses[i] for i in idxs]
+        model_accs = [model_accs[i] for i in idxs]
 
     # < 1 epoch training, likely for FT attack
     if len(model_ckpts) == 0:
@@ -258,7 +275,7 @@ def train_model(
         model.cpu()
         return model
 
-    if best_n == 1:
+    if pick_n == 1:
         return model_ckpts[0], model_accs[0], model_losses[0]
     return model_ckpts, model_accs, model_losses
 
@@ -298,6 +315,8 @@ def evaluate_model(model, test_loader, criterion, device="cuda"):
 def main(save_dir: str, args):
     n_models = args.num_models
     same_init = args.init_ref
+    skip_model = args.l_mode_ref_model
+    skip_data_index = args.l_mode_ref_point
     # Follow setup of LiRA
     # 50% of data is used for training model
     # Other 50% used to train quantile model, and also serve as non-members
@@ -311,10 +330,12 @@ def main(save_dir: str, args):
 
     save_dir_use = save_dir
     if same_init is not None:
-        save_dir_use = f"{save_dir_use}/same_init/{same_init}"
+        save_dir_use = os.path.join(save_dir_use, f"same_init/{same_init}")
+    if skip_model is not None:
+        save_dir_use = os.path.join(save_dir_use, f"l_mode/{skip_model}/{skip_data_index}")
 
-    if args.best_n != 1:
-        save_dir_use = os.path.join(save_dir_use, f"best_{args.best_n}")
+    if args.pick_n != 1:
+        save_dir_use = os.path.join(save_dir_use, f"{args.pick_mode}_{args.pick_n}")
 
     num_trained = 0
     for i in range(n_models):
@@ -347,6 +368,14 @@ def main(save_dir: str, args):
             num_experiments=n_models, pkeep=pkeep, exp_id=i
         )
 
+        # Leave-one-out setting
+        if skip_model is not None:
+            # Look up training data of requested model (for leave-one-out setting)
+            train_index = ch.load(f"{save_dir}/{skip_model}.pt")["train_index"]
+            # Skip datapoint at index skip_data_index
+            train_index = np.delete(train_index, skip_data_index)
+            # No need to worry about test index
+
         # Get loaders
         train_loader = get_loader(train_data, train_index, batch_size)
         test_loader = get_loader(test_data, test_index, batch_size)
@@ -361,13 +390,14 @@ def main(save_dir: str, args):
             test_loader,
             learning_rate,
             epochs,
-            best_n=args.best_n,
+            pick_n=args.pick_n,
+            pick_mode=args.pick_mode,
         )
 
         # Make sure folder directory exists
         os.makedirs(save_dir_use, exist_ok=True)
 
-        if args.best_n == 1:
+        if args.pick_n == 1:
             # Save model dictionary, along with information about train_index and test_index
             ch.save(
                 {
@@ -405,19 +435,36 @@ if __name__ == "__main__":
     args.add_argument("--model_arch", type=str, default="wide_resnet_28_2")
     args.add_argument("--num_models", type=int, default=128, help="Total number of models (data splits will be created accordingly)")
     args.add_argument("--num_train", type=int, default=128, help="Number of models to train (out of num_models)")
-    args.add_argument("--best_n", type=int, default=1, help="Of all checkpoints, keep the best n.")
+    args.add_argument("--pick_n", type=int, default=1, help="Of all checkpoints, keep n.")
+    args.add_argument("--pick_mode", type=str, default="best", help="Criteria for picking N checkpoints.")
     args.add_argument(
         "--init_ref",
         type=int,
         default=None,
         help="If not None, use same initialization as model with this index",
     )
+    args.add_argument(
+        "--l_mode_ref_model",
+        type=int,
+        default=None,
+        help="If not None, train ref models in leave-one-out setting by using all records except the training record (of the model specified via l_mode_ref_model) at l_mode_ref_point",
+    )
+    args.add_argument(
+        "--l_mode_ref_point",
+        type=int,
+        default=None,
+        help="See l_mode_ref_model",
+    )
     args = args.parse_args()
 
     if args.num_train > args.num_models:
         raise ValueError("num_train cannot be greater than num_models")
-    if args.best_n < 1:
-        raise ValueError("best_n must be >= 1")
+    if args.pick_n < 1:
+        raise ValueError("pick_n must be >= 1")
+    if args.pick_mode not in ["best", "last"]:
+        raise ValueError("pick_mode must be 'best' or 'last'")
+    if (args.l_mode_ref_model == None) != (args.l_mode_ref_point == None):
+        raise ValueError("l_mode_ref_model and l_mode_ref_point must be used together")
 
     save_dir = get_models_path()
     main(os.path.join(save_dir, args.model_arch), args)

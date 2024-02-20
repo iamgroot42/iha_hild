@@ -1,11 +1,32 @@
 from torchvision import transforms
 import torchvision
+import torch as ch
 from mib.utils import get_data_source
 
 from mib.dataset.base import Dataset
 
 
 class CIFAR10(Dataset):
+    def get_augmented_input(self, x, y):
+        flip_transform = transforms.RandomHorizontalFlip()
+
+        # Standard image
+        augmented = [x]
+
+        # Un-normalize image
+        x_unnorm = (x * 0.5) + 0.5
+        for pad_h in [1, 2, 3, 4]:
+            for pad_w in [1, 2, 3, 4]:
+                # Add cropped image
+                aug = transforms.RandomCrop(32, padding=(pad_h, pad_w))(x_unnorm)
+                augmented.append((aug - 0.5) / 0.5)
+
+                # And cropped + flipped image
+                aug_flip = flip_transform(aug)
+                augmented.append((aug_flip - 0.5) / 0.5)
+
+        return ch.cat(augmented, 0)
+
     def __init__(self, augment: bool = True):
         transforms_train = transforms.Compose(
             [

@@ -2,7 +2,7 @@ import numpy as np
 import torch as ch
 
 
-def compute_gradients(model, criterion, a, b) -> np.ndarray:
+def compute_gradients(model, criterion, a, b, pick_specific_layer: int = None) -> np.ndarray:
     """
     Compute gradients of model given datapoint (a, b)
     """
@@ -11,8 +11,16 @@ def compute_gradients(model, criterion, a, b) -> np.ndarray:
     loss = criterion(pred, b).mean()
     loss.backward()
     grads = []
-    for p in model.parameters():
+    total_layers_avail = 0
+    for i, p in enumerate(model.parameters()):
+        total_layers_avail += 1
+        if pick_specific_layer is not None and i != pick_specific_layer:
+            continue
         grads.extend(list(p.grad.detach().cpu().numpy().flatten()))
+    if len(grads) == 0:
+        raise ValueError(
+            f"No gradients computed! Was pick_specific_layer set correctly? Total {total_layers_avail} layers available"
+        )
     model.zero_grad()
     grads = np.array(grads)
     return grads

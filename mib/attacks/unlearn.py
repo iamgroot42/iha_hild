@@ -101,3 +101,92 @@ class Unlearning(Attack):
             "grads": grads,
             "params": params,
         }
+
+
+class UnlearningAct(Attack):
+    """
+    Unlearning attack - records activation metrics before/after unlearning.
+    """
+
+    def __init__(self, model):
+        super().__init__("Unlearning", model, whitebox=True)
+
+    def compute_scores(self, x, y, **kwargs) -> np.ndarray:
+        scores = []
+
+        batch_size = kwargs.get("batch_size", 256)
+        num_times = kwargs.get("num_times", 3)
+        learning_rate = kwargs.get("learning_rate", 0.001)
+        other_data_source = kwargs.get("other_data_source", None)
+        if other_data_source is None:
+            raise ValueError("other_data_source must be provided.")
+
+        # Take a reasonable amount of data from other_data_source
+        other_data_stacked = ch.stack([z for z, _ in other_data_source], 0)[:batch_size]
+
+        for x_, y_ in zip(x, y):
+            # Create loader out of given data source
+            given_loader = ch.utils.data.DataLoader(
+                other_data_source, batch_size=batch_size - 1, shuffle=True
+            )
+
+            # Create custom loader
+            loader = SpecificPointIncludedLoader(given_loader, (x_, y_), num_times)
+            criterion = nn.CrossEntropyLoss()
+            # Make copy of model before sending it over
+            model_ = copy.deepcopy(self.model.cpu())
+
+            # Take note of metric for interest_point before fine-tuning
+            acts_before = self._measurement(
+                model_,
+                x_.unsqueeze(0),
+            )
+            # Also take note of metric for data definitely not seen before
+            acts_before_out = self._measurement(model_, other_data_stacked)
+
+            # Fine-tune model
+            model_.cuda()
+            model_ = train_model(
+                model_,
+                criterion,
+                loader,
+                test_loader=None,
+                learning_rate=learning_rate,
+                epochs=1,
+                verbose=False,
+                loss_multiplier=-1,
+            )
+
+            # Do sth with new model
+            acts_after = self._measurement(
+                model_,
+                x_.unsqueeze(0),
+            )
+            # Also take note of metric for data definitely not seen before
+            acts_after_out = self._measurement(model_, other_data_stacked)
+
+            # For now, look at difference in gradient norms
+            score = acts_after - acts_before
+            # Normalize by difference in activation for out-of-distribution data
+            score -= (acts_after_out - acts_before_out)
+            scores.append(score)
+
+        return np.array(scores)
+
+    def _measurement(self, model, a):
+        pick_layer = 2 # doesn't seem to matter much
+
+        # With ref (non0member data)
+        # 2 : 0.528
+        # 3 : 0.529
+
+        acts = (
+            model(a, layer_readout=pick_layer)
+            .detach()
+            .cpu()
+            .view(len(a), -1)
+            .numpy()
+        )
+
+        nonzero_acts = np.mean(np.sum(acts > 0, 1) * 1.)
+        return nonzero_acts
