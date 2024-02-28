@@ -13,7 +13,10 @@ class Attack(object):
     """
 
     def __init__(
-        self, name: str, model, whitebox: bool = False,
+        self,
+        name: str,
+        model,
+        whitebox: bool = False,
         reference_based: bool = False,
         label_smoothing: float = 0.0,
         requires_trace: bool = False

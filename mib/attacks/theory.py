@@ -125,8 +125,15 @@ def compute_trace(model, train_loader, test_loader,
 
     trace_value = (m2 - m1 ** 2)
     eps = 1e-10
+
     # Ignore entries where |m1 - m2| < eps
-    trace_value = trace_value[ch.abs(trace_value) > eps]
+    # ignore entries where m1 < eps or m2 < eps**2
+    keep_mask_1 = ch.abs(m1) > eps
+    keep_mask_2 = ch.abs(m2) > (eps ** 2)
+    keep_mask = ch.logical_and(keep_mask_1, keep_mask_2)
+    trace_value = trace_value[keep_mask]
+
+    trace_value = trace_value[ch.abs(trace_value) > 1e-15]
     trace_value = ch.sum(1 / trace_value)
 
     # Scale with dimensionality

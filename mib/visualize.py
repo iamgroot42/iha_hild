@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_curve, auc, precision_recall_curve
+from sklearn.metrics import roc_curve, auc
 import matplotlib as mpl
 import os
 import argparse
@@ -14,14 +14,40 @@ mpl.rcParams["ps.fonttype"] = 42
 plt.rcParams["font.family"] = "Times New Roman"
 
 
+ATTACKS_TO_PLOT = [
+    # "LiRAOnline",
+    "LiRAOnline_aug",
+    # "LOSS",
+    "LiRAOnline_same_seed_ref",
+    "LiRAOnline_same_seed_ref_aug",
+    # "LiRAOnline_20_ref_aug",
+    # "LiRAOnline_same_seed_ref_20_ref",
+    # "LiRAOnline_same_seed_ref_last5",
+    # "LiRAOnline_same_seed_ref_aug_last5",
+    # "UnlearnGradNorm",
+    "UnlearningAct",
+    # "LiRAOnline_best5",
+    # "LiRAOnline_aug_best5",
+    "LiRAOnline_last5",
+    # "LiRAOnline_aug_last5",
+    # "Activations",
+    "ActivationsOffline",
+    "TheoryRef"
+]
+
+
 def main(args):
-    signals_path = os.path.join(get_signals_path(), str(args.model_index))
+    signals_path = os.path.join(get_signals_path(), "unhinged_audit", str(args.model_index))
+    # signals_path = os.path.join(get_signals_path(), str(args.model_index))
 
     info = {}
     for attack in os.listdir(signals_path):
         attack_name = attack.split(".")[0]
-        if attack_name == "ReferenceSmooth_4_ref":
+        """
+        if attack_name not in ATTACKS_TO_PLOT:
+            print("Skipping", attack_name, "...")
             continue
+        """
         data = np.load(os.path.join(signals_path, attack), allow_pickle=True).item()
 
         signals_in = data["in"]
@@ -30,6 +56,7 @@ def main(args):
 
         total_preds = np.concatenate((signals_out, signals_in))
         fpr, tpr, thresholds = roc_curve(total_labels, total_preds)
+
         roc_auc = auc(fpr, tpr)
         plt.plot(fpr, tpr, label="%s (AUC = %0.3f)" % (attack_name, roc_auc))
 
@@ -41,10 +68,10 @@ def main(args):
         }
         info[attack_name] = info_
 
-        print(
-            "%s | AUC = %0.3f | TPR@0.1FPR=%0.3f | TPR@0.01FPR=%0.3f"
-            % (attack_name, roc_auc, info_["tpr@0.1fpr"], info_["tpr@0.01fpr"])
-        )
+        # print(
+        #     "%s | AUC = %0.3f | TPR@0.1FPR=%0.3f | TPR@0.01FPR=%0.3f"
+        #     % (attack_name, roc_auc, info_["tpr@0.1fpr"], info_["tpr@0.01fpr"])
+        # )
 
     # Make sure plot directory exists
     if not os.path.exists(args.plotdir):

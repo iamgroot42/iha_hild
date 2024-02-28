@@ -43,7 +43,25 @@ class wide_basic(nn.Module):
                 nn.Conv2d(in_planes, planes, kernel_size=1, stride=stride, bias=True),
             )
 
-    def forward(self, x):
+    def forward(self, x, pre_bn_stats: bool = False):
+        features = []
+        bnorm_means, bnorm_vars = [], []
+        if pre_bn_stats:
+            out = self.bn1(x)
+            features.append(out)
+            bnorm_means.append(self.bn1.running_mean.detach())
+            bnorm_vars.append(self.bn1.running_var.detach())
+            out = self.conv1(F.relu(out))
+
+            out = self.bn2(out)
+            features.append(out)
+            bnorm_means.append(self.bn2.running_mean.detach())
+            bnorm_vars.append(self.bn2.running_var.detach())
+            out = self.conv2(F.relu(out))
+            out += self.shortcut(x)
+
+            return out, (features, bnorm_means, bnorm_vars)
+
         out = self.conv1(F.relu(self.bn1(x)))
         out = self.conv2(F.relu(self.bn2(out)))
         out += self.shortcut(x)
@@ -85,7 +103,39 @@ class Wide_ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x, layer_readout: int = None):
+    def forward_prebn_stats(self, x):
+        """
+            Collect intermediate features before each batchnorm layer and return.
+            Also collect batchnorm stats at these points
+        """
+        features = []
+        bnorm_means, bnorm_vars = [], []
+        out = self.conv1(x)
+        layers = [self.layer1, self.layer2, self.layer3]
+        for layer in layers:
+            for block in layer:
+                out, (f, m, v) = block(out, pre_bn_stats=True)
+                features.extend(f)
+                bnorm_means.extend(m)
+                bnorm_vars.extend(v)
+
+        # self.bn1
+        out = self.bn1(out)
+        features.append(out)
+        bnorm_means.append(self.bn1.running_mean.detach())
+        bnorm_vars.append(self.bn1.running_var.detach())
+        out = F.relu(out)
+
+        out = F.avg_pool2d(out, 8)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        assert len(features) == len(bnorm_means) == len(bnorm_vars), "Mismatch in lengths of batchnorm-related statistics!"
+        return out, (features, bnorm_means, bnorm_vars)
+
+    def forward(self, x, layer_readout: int = None, pre_bn_layers: bool = False):
+        if pre_bn_layers:
+            return self.forward_prebn_stats(x)
+
         out = self.conv1(x)
         if layer_readout == 0:
             return out

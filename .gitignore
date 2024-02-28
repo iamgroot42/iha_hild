@@ -14,3 +14,5 @@ cifar-10-batches-py/*
 mib/__pycache__/*
 mib/*/__pycache__/*
 mib/cifar-10-batches-py/*
+
+lightning_logs/*
