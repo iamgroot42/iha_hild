@@ -1,7 +1,9 @@
 from mib.dataset.cifar10 import CIFAR10
+from mib.dataset.cifar100 import CIFAR100
 
 DATASET_MAPPING = {
-    "cifar10": CIFAR10
+    "cifar10": CIFAR10,
+    "cifar100": CIFAR100
 }
 
 

@@ -63,14 +63,16 @@ class TheoryRef(Attack):
         return scores
 
 
-def compute_gradients_on_data(model, loader, criterion, device, population_grads=None):
+def compute_gradients_on_data(model, loader, criterion, device,
+                              population_grads=None,
+                              random_batches: int = None):
     # Set model to eval mode
     model.eval()
 
     # Compute gradients of model on all given data
     running_gradients = []
     m1, m2 = [], []
-    for x, y in loader:
+    for i, (x, y) in enumerate(loader):
         x, y = x.to(device), y.to(device)
         model.zero_grad()
         y_hat = model(x)
@@ -86,6 +88,10 @@ def compute_gradients_on_data(model, loader, criterion, device, population_grads
         else:
             running_grad = flat_grads
             running_gradients.append(running_grad)
+
+        # Only sample a specific number of random batches, if specified
+        if random_batches == (i + 1):
+            break
 
     # Zero out model gradients now
     model.zero_grad()
@@ -111,14 +117,16 @@ def compute_grad_noise_statistics(model, population_grads, loader, criterion, de
 def compute_trace(model, train_loader, test_loader,
                   device="cuda",
                   shift_model: bool = True,
-                  get_m1_m2: bool = False):
+                  get_m1_m2: bool = False,
+                  random_batches: int = None):
     if shift_model:
         model.to(device)
     criterion = nn.CrossEntropyLoss()
-    population_grads = compute_gradients_on_data(model, test_loader, criterion, device)
+    population_grads = compute_gradients_on_data(model, test_loader, criterion, device, random_batches=random_batches)
 
     m1, m2 = compute_gradients_on_data(
-        model, train_loader, criterion, device, population_grads
+        model, train_loader, criterion, device, population_grads,
+        random_batches=random_batches
     )
     if shift_model:
         model.cpu()

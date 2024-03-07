@@ -132,29 +132,51 @@ class Wide_ResNet(nn.Module):
         assert len(features) == len(bnorm_means) == len(bnorm_vars), "Mismatch in lengths of batchnorm-related statistics!"
         return out, (features, bnorm_means, bnorm_vars)
 
-    def forward(self, x, layer_readout: int = None, pre_bn_layers: bool = False):
+    def forward(self, x, layer_readout: int = None, pre_bn_layers: bool = False, get_all: bool = False):
         if pre_bn_layers:
             return self.forward_prebn_stats(x)
 
+        all_embeds = []
         out = self.conv1(x)
+        if get_all:
+            all_embeds.append(out)
         if layer_readout == 0:
             return out
+
         out = self.layer1(out)
+        if get_all:
+            all_embeds.append(out)
         if layer_readout == 1:
             return out
+
         out = self.layer2(out)
+        if get_all:
+            all_embeds.append(out)
         if layer_readout == 2:
             return out
+
         out = self.layer3(out)
+        if get_all:
+            all_embeds.append(out)
         if layer_readout == 3:
             return out
+
         out = F.relu(self.bn1(out))
+        if get_all:
+            all_embeds.append(out)
         if layer_readout == 4:
             return out
+
         out = F.avg_pool2d(out, 8)
         out = out.view(out.size(0), -1)
+        if get_all:
+            all_embeds.append(out)
         if layer_readout == 5:
             return out
+
+        if get_all:
+            return all_embeds
+
         out = self.linear(out)
         return out
 

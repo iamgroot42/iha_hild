@@ -12,112 +12,7 @@ from torchvision import transforms
 
 from mib.models.utils import get_model
 from mib.utils import get_models_path
-
-
-def get_data(
-    seed: int = 2024,
-    pkeep: float = 0.5,
-    num_experiments: int = 8,
-    exp_id: int = None,
-    just_want_data: bool = False,
-):
-    """
-    For random split generation, follow same setup as Carlini/Shokri.
-    This is the function to generate subsets of the data for training models.
-
-    First, we get the training dataset.
-
-    Then, we compute the subset. This works in one of two ways.
-
-    1. If we have a seed, then we just randomly choose examples based on
-       a prng with that seed, keeping pkeep fraction of the data.
-
-    2. Otherwise, if we have an experiment ID, then we do something fancier.
-       If we run each experiment independently then even after a lot of trials
-       there will still probably be some examples that were always included
-       or always excluded. So instead, with experiment IDs, we guarantee that
-       after num_experiments are done, each example is seen exactly half
-       of the time in train, and half of the time not in train.
-
-    """
-    transforms_train = transforms.Compose(
-        [
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5), (0.5)),
-        ]
-    )
-    transforms_test = transforms.Compose(
-        [
-            transforms.ToTensor(),
-            transforms.Normalize((0.5), (0.5)),
-        ]
-    )
-
-    train_data = torchvision.datasets.CIFAR10(
-        root="/u/as9rw/work/auditing_mi",
-        train=True,
-        download=True,
-        transform=transforms_train,
-    )
-    test_data = torchvision.datasets.CIFAR10(
-        root="/u/as9rw/work/auditing_mi",
-        train=False,
-        download=True,
-        transform=transforms_test,
-    )
-
-    if just_want_data:
-        return train_data, test_data
-
-    def get_keep(data, sd: int):
-        if num_experiments is not None:
-            np.random.seed(sd)
-            keep = np.random.uniform(0, 1, size=(num_experiments, len(data.data)))
-            order = keep.argsort(0)
-            keep = order < int(pkeep * num_experiments)
-            keep = np.array(keep[exp_id], dtype=bool)
-        else:
-            np.random.seed(sd)
-            keep = np.random.uniform(0, 1, size=len(data.data)) <= pkeep
-        # Create indices corresponding to keep
-        indices = np.arange(len(data.data))
-        return indices[keep]
-
-    # Split such that every datapoint seen in half of experiments
-    train_keep = get_keep(train_data, seed)
-    test_keep = get_keep(test_data, seed + 1)
-
-    return train_keep, test_keep, train_data, test_data
-
-
-"""
-def load_data(num_train_points: int, num_test_points: int):
-    # Load data
-    transform = transforms.Compose([transforms.ToTensor()])
-    all_data = torchvision.datasets.CIFAR10(
-        root=".", train=True, download=True, transform=transform
-    )
-    test_data = torchvision.datasets.CIFAR10(
-        root=".", train=False, download=True, transform=transform
-    )
-    all_features = np.concatenate([all_data.data, test_data.data], axis=0)
-    all_targets = np.concatenate([all_data.targets, test_data.targets], axis=0)
-
-    all_data.data = all_features
-    all_data.targets = all_targets
-
-    if num_train_points is None or num_test_points is None:
-        return all_data
-
-    all_index = np.arange(len(all_data))
-    train_index = np.random.choice(all_index, num_train_points, replace=False)
-    test_index = np.random.choice(
-        [i for i in all_index if i not in train_index], num_test_points, replace=False
-    )
-    return all_data, train_index, test_index
-"""
+from mib.dataset.utils import get_dataset
 
 
 def get_loader(dataset, indices, batch_size: int, start_seed: int = 42, shuffle: bool = True):
@@ -322,10 +217,9 @@ def main(save_dir: str, args):
     # Other 50% used to train quantile model, and also serve as non-members
 
     # CIFAR
-    pkeep = 0.5
-
     # Train target model
-    dataset = "CIFAR10"
+    pkeep = 0.5
+    ds = get_dataset(args.dataset)()
     device = "cuda"
 
     save_dir_use = save_dir
@@ -345,7 +239,7 @@ def main(save_dir: str, args):
             continue
 
         # Get model
-        model, criterion, hparams = get_model(args.model_arch, n_classes=10)
+        model, criterion, hparams = get_model(args.model_arch, n_classes=ds.num_classes)
         model.to(device)
         batch_size = hparams["batch_size"]
         learning_rate = hparams["learning_rate"]
@@ -364,8 +258,8 @@ def main(save_dir: str, args):
         model = ch.compile(model)
 
         # Get data
-        train_index, test_index, train_data, test_data = get_data(
-            num_experiments=n_models, pkeep=pkeep, exp_id=i
+        train_index, test_index, train_data, test_data = ds.make_splits(
+            seed=args.data_seed, num_experiments=n_models, pkeep=pkeep, exp_id=i
         )
 
         # Leave-one-out setting
@@ -433,6 +327,8 @@ def main(save_dir: str, args):
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
     args.add_argument("--model_arch", type=str, default="wide_resnet_28_2")
+    args.add_argument("--dataset", type=str, default="cifar10")
+    args.add_argument("--data_seed", type=int, default=2024)
     args.add_argument("--num_models", type=int, default=128, help="Total number of models (data splits will be created accordingly)")
     args.add_argument("--num_train", type=int, default=128, help="Number of models to train (out of num_models)")
     args.add_argument("--pick_n", type=int, default=1, help="Of all checkpoints, keep n.")
@@ -467,4 +363,4 @@ if __name__ == "__main__":
         raise ValueError("l_mode_ref_model and l_mode_ref_point must be used together")
 
     save_dir = get_models_path()
-    main(os.path.join(save_dir, args.model_arch), args)
+    main(os.path.join(save_dir, args.dataset, args.model_arch), args)

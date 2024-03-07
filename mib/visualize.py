@@ -17,7 +17,7 @@ plt.rcParams["font.family"] = "Times New Roman"
 ATTACKS_TO_PLOT = [
     # "LiRAOnline",
     "LiRAOnline_aug",
-    # "LOSS",
+    "LOSS",
     "LiRAOnline_same_seed_ref",
     "LiRAOnline_same_seed_ref_aug",
     # "LiRAOnline_20_ref_aug",
@@ -37,8 +37,8 @@ ATTACKS_TO_PLOT = [
 
 
 def main(args):
-    signals_path = os.path.join(get_signals_path(), "unhinged_audit", str(args.model_index))
-    # signals_path = os.path.join(get_signals_path(), str(args.model_index))
+    # signals_path = os.path.join(get_signals_path(), "unhinged_audit", str(args.model_index))
+    signals_path = os.path.join(get_signals_path(), args.dataset, str(args.model_index))
 
     info = {}
     for attack in os.listdir(signals_path):
@@ -96,6 +96,7 @@ def main(args):
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
     args.add_argument("--model_index", type=int, default=0)
+    args.add_argument("--dataset", type=str, default="cifar10")
     args.add_argument("--plotdir", type=str, default="./plots")
     args = args.parse_args()
     main(args)

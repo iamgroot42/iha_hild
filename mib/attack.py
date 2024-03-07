@@ -25,6 +25,7 @@ ch.backends.cudnn.benchmark = False
 def member_nonmember_loaders(
     train_data,
     train_idx,
+    num_points_sample: int,
     args,
     num_nontrain_pool: int = None,
     batch_size: int = 1,
@@ -39,7 +40,7 @@ def member_nonmember_loaders(
         train_index_subset = train_idx
     else:
         np.random.seed(args.exp_seed)
-        train_index_subset = np.random.choice(train_idx, args.num_points, replace=False)
+        train_index_subset = np.random.choice(train_idx, num_points_sample, replace=False)
 
     # Sample non-members
     np.random.seed(args.exp_seed + 1)
@@ -59,7 +60,7 @@ def member_nonmember_loaders(
         # Sample non-members
         np.random.seed(args.exp_seed + 2)
         nonmember_index_subset = np.random.choice(
-            nonmember_indices_test, args.num_points, replace=False
+            nonmember_indices_test, num_points_sample, replace=False
         )
 
     # Make dsets
@@ -120,10 +121,13 @@ def load_ref_models(model_dir, args):
 
 
 def main(args):
-    model_dir = os.path.join(get_models_path(), args.model_arch)
+    model_dir = os.path.join(get_models_path(), args.dataset, args.model_arch)
+
+    # TODO: Get these stats from a dataset class
+    ds = get_dataset(args.dataset)(augment=False)
 
     # Load target model
-    target_model, _, _ = get_model(args.model_arch, 10)
+    target_model, _, _ = get_model(args.model_arch, ds.num_classes)
     model_dict = ch.load(os.path.join(model_dir, f"{args.target_model_index}.pt"))
     target_model.load_state_dict(model_dict["model"], strict=False)
     target_model.eval()
@@ -131,8 +135,6 @@ def main(args):
     # Pick records (out of all train) to test
     train_index = model_dict["train_index"]
 
-    # TODO: Get these stats from a dataset class
-    ds = get_dataset(args.dataset)(augment=False)
     # CIFAR
     num_nontrain_pool = 10000
 
@@ -148,6 +150,7 @@ def main(args):
     ) = member_nonmember_loaders(
         train_data,
         train_index,
+        args.num_points,
         args,
         num_nontrain_pool,
     )
@@ -161,6 +164,7 @@ def main(args):
         mem_loader_, nonmem_loader_ = member_nonmember_loaders(
             train_data,
             train_index,
+            args.num_points,
             args,
             num_nontrain_pool=5000,
             want_all_member_nonmember=True,
@@ -193,6 +197,7 @@ def main(args):
                 mem_loader, nonmem_loader = member_nonmember_loaders(
                     train_data,
                     ids,
+                    args.num_points,
                     args,
                     # num_train_points=num_train_points,
                     num_nontrain_pool=5000,
@@ -285,7 +290,7 @@ def main(args):
     signals_in = np.concatenate(signals_in, 0)
     signals_out = np.concatenate(signals_out, 0)
     signals_dir = get_signals_path()
-    save_dir = os.path.join(signals_dir, str(args.target_model_index))
+    save_dir = os.path.join(signals_dir, args.dataset, str(args.target_model_index))
 
     # Make sure save_dir exists
     if not os.path.exists(save_dir):

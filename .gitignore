@@ -16,3 +16,6 @@ mib/*/__pycache__/*
 mib/cifar-10-batches-py/*
 
 lightning_logs/*
+
+saved_values/*
+auditing_signals/*
