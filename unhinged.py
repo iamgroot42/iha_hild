@@ -2,26 +2,28 @@
     Use knowledge of membership from X% of actual training data to train membership meta-classifier.
     Potentially unrealistic threat model as an adversary, but plausible for auditing.
 """
+
+# Silence annoying 'TensorRT' warnings, esp when we're not even using Tensorflow
+# import os
+# os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow info and warning messages
+# import tensorflow as tf
+
 import os
 import torch as ch
 import numpy as np
 import argparse
-import copy
 from tqdm import tqdm
 
-import pickle
 from sklearn.metrics import roc_auc_score
 
 from mib.attack import member_nonmember_loaders
 from mib.models.utils import get_model
 from mib.dataset.utils import get_dataset
-from mib.attacks.utils import get_attack
 from mib.utils import get_signals_path, get_models_path
 import torch.multiprocessing as mp
 
 from mib.attacks.meta_audit import (
     train_meta_clf,
-    MetaModePlain,
     MetaModelCNN,
     FeaturesDataset,
     dict_collate_fn
@@ -44,7 +46,7 @@ def main(args):
     train_index = model_dict["train_index"]
 
     # CIFAR
-    num_nontrain_pool = 25000 #10000
+    num_nontrain_pool = 25000 #25000 #10000
 
     # Get data
     train_data = ds.get_train_data()
@@ -115,10 +117,11 @@ def main(args):
         target_model,
         (x_data_train, y_data_train),
         signals_train_y,
-        batch_size=128,
+        batch_size=64,
         val_points=250,
-        num_epochs=5,
-        device=META_DEVICE
+        num_epochs=50,
+        device=META_DEVICE,
+        augment=args.augment,
     )
     meta_clf.eval()
 
@@ -127,11 +130,12 @@ def main(args):
 
     # Probably easier to make a loader out of test data
     ds_test = FeaturesDataset(target_model, x_data_test, y_data_test, ch.from_numpy(signals_test_y).float(), batch_size=16)
-    test_loader = ch.utils.data.DataLoader(ds_test, batch_size=4, shuffle=False,  collate_fn=dict_collate_fn)
+    test_loader = ch.utils.data.DataLoader(ds_test, batch_size=1, shuffle=False,  collate_fn=dict_collate_fn)
     # Convert list of dicts to list of dicts
     test_preds = []
     for batch in test_loader:
         x, y = batch[0], batch[1]
+        # x_aug = ds.get_augmented_input(x, y)
         x_ = {k: v.to(META_DEVICE) for k, v in x.items()}
         preds = ch.nn.functional.sigmoid(meta_clf(x_)).detach().cpu().numpy()
         # Take average pred
@@ -162,6 +166,7 @@ if __name__ == "__main__":
     args.add_argument("--model_arch", type=str, default="wide_resnet_28_2")
     args.add_argument("--dataset", type=str, default="cifar10")
     args.add_argument("--attack", type=str, default="MetaAudit")
+    args.add_argument("--augment", action="store_true", help="Augment training data?")
     args.add_argument("--exp_seed", type=int, default=2024)
     args.add_argument("--target_model_index", type=int, default=0)
 

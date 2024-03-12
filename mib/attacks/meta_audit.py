@@ -11,6 +11,7 @@ import numpy as np
 from tqdm import tqdm
 import lightning as L
 from torch.utils.data import Dataset
+from torchvision import transforms
 
 from mib.attacks.base import Attack
 from sklearn.metrics import roc_auc_score
@@ -64,24 +65,24 @@ class MetaModelCNN(nn.Module):
             nn.Conv2d(16, 6, 5),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, 2),
-            nn.Conv2d(6, 6, 5),
-            nn.BatchNorm2d(6),
+            nn.Conv2d(6, 4, 5),
+            nn.BatchNorm2d(4),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, 2),
             nn.Flatten(),
-            nn.Linear(150, hidden_dim),
+            nn.Linear(100, hidden_dim),
             nn.ReLU(inplace=True),
         )
         self.acts_1 = nn.Sequential(
             nn.Conv2d(32, 6, 5),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, 2),
-            nn.Conv2d(6, 6, 5),
-            nn.BatchNorm2d(6),
+            nn.Conv2d(6, 4, 5),
+            nn.BatchNorm2d(4),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, 2),
             nn.Flatten(),
-            nn.Linear(150, hidden_dim),
+            nn.Linear(100, hidden_dim),
             nn.ReLU(inplace=True),
         )
         self.acts_2 = nn.Sequential(
@@ -115,13 +116,24 @@ class MetaModelCNN(nn.Module):
             nn.ReLU(inplace=True),
         )
         self.acts_5 = nn.Sequential(nn.Linear(128, hidden_dim), nn.BatchNorm1d(hidden_dim), nn.ReLU(inplace=True))
-        self.acts_all = nn.Sequential(nn.Linear(3 * hidden_dim, hidden_dim), nn.BatchNorm1d(hidden_dim), nn.ReLU(inplace=True))
+        num_acts_use = 6
+        self.acts_all = nn.Sequential(nn.Linear(num_acts_use * hidden_dim, hidden_dim), nn.BatchNorm1d(hidden_dim), nn.ReLU(inplace=True))
         # self.acts_all = nn.Sequential(nn.Linear(6 * hidden_dim, hidden_dim), nn.BatchNorm1d(hidden_dim), nn.ReLU(inplace=True))
+
+        # Attention heads for intermediate activations
+        self.attention_acts = nn.MultiheadAttention(hidden_dim, 2)
+
         # For gradnorms
-        self.gradfc = nn.Sequential(nn.Linear(108, 32), nn.BatchNorm1d(32), nn.ReLU(inplace=True), nn.Linear(32, hidden_dim), nn.ReLU(inplace=True))
+        # self.gradfc = nn.Sequential(nn.Linear(108, 32), nn.BatchNorm1d(32), nn.ReLU(inplace=True), nn.Linear(32, hidden_dim), nn.ReLU(inplace=True))
+
         # For logits
         self.logits_fc = nn.Sequential(nn.Linear(num_classes_data, hidden_dim), nn.ReLU(inplace=True))
-        self.fc = nn.Sequential(nn.Linear(hidden_dim * 3 + 1, hidden_dim), nn.ReLU(inplace=True), nn.Linear(hidden_dim, 1))
+
+        # For batch-norm distances
+
+        # Final connector
+        self.fc = nn.Sequential(nn.Linear(hidden_dim * 2 + 1, hidden_dim), nn.ReLU(inplace=True), nn.Linear(hidden_dim, 1))
+
 
     def forward(self, data):
         # For activation
@@ -137,13 +149,25 @@ class MetaModelCNN(nn.Module):
         x_act4 = self.acts_4(act_4)
         act_5 = data["activations_5"]
         x_act5 = self.acts_5(act_5)
-        x_acts = ch.cat((x_act0, x_act2, x_act4), 1)
-        # x_acts = ch.cat((x_act0, x_act1, x_act2, x_act3, x_act4, x_act5), 1)
+
+        # ATTENTION
+        # x_acts = ch.stack((x_act0, x_act2, x_act4), 2)
+        x_acts = ch.stack((x_act0, x_act1, x_act2, x_act3, x_act4, x_act5), 2)
+        # 2nd dim is batch size, 1st dim is sequence length
+        x_acts = x_acts.permute(2, 0, 1)
+        x_acts, _ = self.attention_acts(x_acts, x_acts, x_acts)
+        x_acts = x_acts.permute(1, 0, 2)
+        # Bring it back into expected shape
+        x_acts = x_acts.reshape(x_acts.shape[0], -1)
+        # NO ATTENTION
+        # x_acts = ch.cat((x_act0, x_act2, x_act4), 1)
+
+        # Activations
         x_acts = self.acts_all(x_acts)
 
         # For gradnorms
-        gradnorms = data["gradnorms"]
-        x_gn = self.gradfc(gradnorms)
+        # gradnorms = data["gradnorms"]
+        # x_gn = self.gradfc(gradnorms)
 
         # For logits
         logits = data["logits"]
@@ -151,8 +175,9 @@ class MetaModelCNN(nn.Module):
 
         # Combine them all
         loss = data["loss"]
-        # print(x_acts.shape, x_gn.shape, x_lg.shape, loss.shape)
-        x = ch.cat((x_acts, x_gn, x_lg, loss), 1)
+
+        x = ch.cat((x_acts, x_lg, loss), 1)
+        # x = ch.cat((x_acts, x_gn, x_lg, loss), 1)
         x = self.fc(x)
 
         return x
@@ -160,15 +185,15 @@ class MetaModelCNN(nn.Module):
 
 def train_meta_classifier(model, num_epochs: int,
                           train_loader, val_loader,
-                          lr: float=1e-4,
+                          lr: float=1e-3,
                           weight_decay: float=5e-4,
                           verbose: bool = True,
                           get_best_val: bool = False,
                           device: str = "cuda"):
     # optimizer = ch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    optimizer = ch.optim.SGD(model.parameters(), lr=1e-1, weight_decay=weight_decay, momentum=0.9)
+    optimizer = ch.optim.SGD(model.parameters(), lr=5e-2, weight_decay=weight_decay, momentum=0.9)
     scheduler = ch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
-    scheduler = None
+    # scheduler = None
     model.to(device)
 
     def get_loss_and_acc(y_hat, y):
@@ -270,22 +295,10 @@ def train_meta_classifier(model, num_epochs: int,
     return model
 
 
-class DictDataset(Dataset):
-    def __init__(self, data, labels):
-        self.data = data
-        self.labels = labels
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, index):
-        return self.data[index], self.labels[index]
-
-
 # Custom pytorch dataclass where (x_data, y_data, y) is stored
 # Real feature generation happens in collation step to maximize parallelism in model calls
 class FeaturesDataset(ch.utils.data.Dataset):
-    def __init__(self, model, x_data, y_data, y_member, batch_size: int):
+    def __init__(self, model, x_data, y_data, y_member, batch_size: int, augment: bool = False):
         self.model = copy.deepcopy(model)
         self.model.eval()
         self.model.cuda()
@@ -293,6 +306,7 @@ class FeaturesDataset(ch.utils.data.Dataset):
         self.y_data = y_data
         self.y_member = y_member
         self.batch_size = batch_size
+        self.augment = augment
 
     def __len__(self):
         return math.ceil(len(self.y_member) / self.batch_size)
@@ -303,6 +317,25 @@ class FeaturesDataset(ch.utils.data.Dataset):
         with ch.no_grad():
             x_ = self.x_data[idx_start: idx_end]
             y_ = self.y_data[idx_start: idx_end]
+
+            # Apply transforms if requested
+            if self.augment:
+                tf = transforms.Compose(
+                    [
+                        # Bring back to [0, 1]
+                        transforms.Normalize((-1), (2.0)),
+                        # Make image
+                        transforms.ToPILImage(),
+                        # Apply standard transforms
+                        transforms.RandomCrop(32, padding=4),
+                        transforms.RandomHorizontalFlip(),
+                        transforms.ToTensor(),
+                        transforms.Normalize((0.5), (0.5)),
+                    ]
+                )
+                # Apply instance-wise transform
+                x_ = ch.stack([tf(z) for z in x_], 0)
+
         features = self.get_signals(x_, y_)
         return features, self.y_member[idx_start: idx_end]
 
@@ -314,7 +347,13 @@ class FeaturesDataset(ch.utils.data.Dataset):
         # Also get loss
         self.model.zero_grad()
         y_hat = self.model(x_)
-        # print(y_hat)
+
+        # """
+        losses = ch.nn.CrossEntropyLoss(reduction="none")(y_hat, y_).detach().cpu().unsqueeze(1)
+        # gradnorms = ch.zeros(len(y_), 108)
+        # """
+
+        """
         # Might as well take note of logits
         losses, gradnorms = [], []
         # Compute element-wise loss and grad norm
@@ -331,18 +370,8 @@ class FeaturesDataset(ch.utils.data.Dataset):
             gradnorms.append(gnorms)
         losses = ch.stack(losses).cpu().unsqueeze(1)
         gradnorms = ch.stack(gradnorms).cpu()
+        """
 
-        """
-        loss = ch.nn.CrossEntropyLoss()(y_hat, y_)
-        # Also compute gradient norms
-        # print(y_hat.shape, y.shape)
-        loss.backward()
-        gradnorms = []
-        for p in self.model.parameters():
-            if p.grad is not None:
-                gradnorms.append(ch.norm(p.grad.data.detach(), 2))
-        gradnorms = ch.stack(gradnorms).cpu()
-        """
         # Return
         m = {
             "activations_0": acts[0].detach().cpu(),
@@ -353,9 +382,9 @@ class FeaturesDataset(ch.utils.data.Dataset):
             "activations_5": acts[5].detach().cpu(),
             "logits": y_hat.detach().cpu(),
             "loss": losses,
-            "gradnorms": gradnorms,
+            # "gradnorms": gradnorms,
         }
-        #for k, v in m.items():
+        # for k, v in m.items():
         #    print(k, v.shape)
         return m
 
@@ -379,7 +408,8 @@ def train_meta_clf(meta_clf, model, x_both, y,
                    batch_size: int = 32,
                    num_epochs: int = 10,
                    val_points: int = 1000,
-                   device: str = "cuda",):
+                   device: str = "cuda",
+                   augment: bool = False):
     x, y_data = x_both
 
     # Sample points for validation using train-test split
@@ -404,20 +434,24 @@ def train_meta_clf(meta_clf, model, x_both, y,
         x_train,
         y_data_train,
         ch.from_numpy(y_train).float(),
-        batch_size=batch_size
+        batch_size=batch_size,
+        augment=augment,
     )
-    train_loader = ch.utils.data.DataLoader(ds_train, batch_size=2, shuffle=True,
+    train_loader = ch.utils.data.DataLoader(ds_train, batch_size=4, shuffle=True,
                                             num_workers=4,
                                             prefetch_factor=4,
-                                            # pin_memory=True,
+                                            pin_memory=True,
                                             collate_fn=dict_collate_fn)
 
     # Make loader out of (x, y) data
-    ds_val = FeaturesDataset(model, x_val, y_data_val, ch.from_numpy(y_val).float(), batch_size=batch_size)
-    val_loader = ch.utils.data.DataLoader(ds_val, batch_size=2, shuffle=False,
+    ds_val = FeaturesDataset(
+        model, x_val, y_data_val,
+        ch.from_numpy(y_val).float(),
+        batch_size=batch_size)
+    val_loader = ch.utils.data.DataLoader(ds_val, batch_size=4, shuffle=False,
                                           num_workers=4,
-                                           prefetch_factor=4,
-                                        #   pin_memory=True,
+                                          prefetch_factor=4,
+                                          pin_memory=True,
                                           collate_fn=dict_collate_fn)
 
     meta_clf_trained = train_meta_classifier(meta_clf, num_epochs, train_loader, val_loader, get_best_val=True, device=device)

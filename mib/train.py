@@ -222,6 +222,13 @@ def main(save_dir: str, args):
     ds = get_dataset(args.dataset)()
     device = "cuda"
 
+    temp, _, _ = get_model(args.model_arch, n_classes=ds.num_classes)
+    num_params = sum(p.numel() for p in temp.parameters() if p.requires_grad)
+    # Print num of params in terms of K/M/B
+    print(f"Number of parameters: {num_params/1e6:.2f}M")
+    del temp
+    # exit(0)
+
     save_dir_use = save_dir
     if same_init is not None:
         save_dir_use = os.path.join(save_dir_use, f"same_init/{same_init}")
@@ -255,7 +262,9 @@ def main(save_dir: str, args):
             model_init = copy.deepcopy(model.state_dict())
 
         # Compile model (Faster training)
-        model = ch.compile(model)
+        # model = ch.compile(model)
+        # Utilize DDP
+        model = ch.nn.parallel.DataParallel(model)
 
         # Get data
         train_index, test_index, train_data, test_data = ds.make_splits(
@@ -291,12 +300,18 @@ def main(save_dir: str, args):
         # Make sure folder directory exists
         os.makedirs(save_dir_use, exist_ok=True)
 
+        def get_save_dict(z):
+            # z is a DP wrapped (on top of compile-wrapped) dict
+            # we want state_dict of the original model
+            # return z._orig_mod.state_dict()
+            return z.module.state_dict()
+
         if args.pick_n == 1:
             # Save model dictionary, along with information about train_index and test_index
             ch.save(
                 {
                     "model_init": model_init,
-                    "model": model._orig_mod.state_dict(),
+                    "model": get_save_dict(model),
                     "train_index": train_index,
                     "test_index": test_index,
                     "loss": best_loss,
@@ -309,7 +324,7 @@ def main(save_dir: str, args):
                 ch.save(
                     {
                         "model_init": model_init,
-                        "model": m._orig_mod.state_dict(),
+                        "model": get_save_dict(m),
                         "train_index": train_index,
                         "test_index": test_index,
                         "loss": l,

@@ -27,7 +27,11 @@ class Dataset:
         return self.get_train_data(), self.get_test_data()
 
     def make_splits(
-        self, seed: int, pkeep: float, exp_id: int = None, num_experiments: int = None
+        self,
+        seed: int,
+        pkeep: float,
+        exp_id: int = None,
+        num_experiments: int = None
     ):
         """
         For random split generation, follow same setup as Carlini/Shokri.
@@ -50,17 +54,18 @@ class Dataset:
         """
 
         def make_split(data, sd):
+            len_data = len(data) # or len(data.data)
             if num_experiments is not None:
                 np.random.seed(sd)
-                keep = np.random.uniform(0, 1, size=(num_experiments, len(data.data)))
+                keep = np.random.uniform(0, 1, size=(num_experiments, len_data))
                 order = keep.argsort(0)
                 keep = order < int(pkeep * num_experiments)
                 keep = np.array(keep[exp_id], dtype=bool)
             else:
                 np.random.seed(sd)
-                keep = np.random.uniform(0, 1, size=len(data.data)) <= pkeep
+                keep = np.random.uniform(0, 1, size=len_data) <= pkeep
             # Create indices corresponding to keep
-            indices = np.arange(len(data.data))
+            indices = np.arange(len_data)
             return indices[keep]
 
         # Split train,test such that every datapoint seen with probability pkeep

@@ -27,8 +27,8 @@ class CIFAR100(Dataset):
 
         return ch.cat(augmented, 0)
 
-    def __init__(self, augment: bool = True):
-        transforms_train = transforms.Compose(
+    def train_transforms(self):
+        return transforms.Compose(
             [
                 transforms.RandomCrop(32, padding=4),
                 transforms.RandomHorizontalFlip(),
@@ -36,12 +36,18 @@ class CIFAR100(Dataset):
                 transforms.Normalize((0.5), (0.5)),
             ]
         )
-        transforms_test = transforms.Compose(
+
+    def test_transforms(self):
+        return transforms.Compose(
             [
                 transforms.ToTensor(),
                 transforms.Normalize((0.5), (0.5)),
             ]
         )
+
+    def __init__(self, augment: bool = True):
+        transforms_train = self.train_transforms()
+        transforms_test = self.test_transforms()
 
         data_root = get_data_source()
         train_data = torchvision.datasets.CIFAR100(
