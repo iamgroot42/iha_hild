@@ -25,6 +25,7 @@ import torch.multiprocessing as mp
 from mib.attacks.meta_audit import (
     train_meta_clf,
     MetaModelCNN,
+    MetaModePlain,
     FeaturesDataset,
     dict_collate_fn
 )
@@ -111,7 +112,10 @@ def main(args):
     META_DEVICE = "cuda:1"
 
     # Create meta-classifier
-    meta_clf = MetaModelCNN(num_classes_data=ds.num_classes)
+    if args.dataset == "purchase100":
+        meta_clf = MetaModePlain(num_classes_data=ds.num_classes)
+    else:
+        meta_clf = MetaModelCNN(num_classes_data=ds.num_classes)
     meta_clf = train_meta_clf(
         meta_clf,
         target_model,
@@ -119,7 +123,7 @@ def main(args):
         signals_train_y,
         batch_size=64,
         val_points=250,
-        num_epochs=50,
+        num_epochs=args.epochs,
         device=META_DEVICE,
         augment=args.augment,
     )
@@ -128,32 +132,58 @@ def main(args):
     # Clear memory
     ch.cuda.empty_cache()
 
+    """
     # Probably easier to make a loader out of test data
-    ds_test = FeaturesDataset(target_model, x_data_test, y_data_test, ch.from_numpy(signals_test_y).float(), batch_size=16)
-    test_loader = ch.utils.data.DataLoader(ds_test, batch_size=1, shuffle=False,  collate_fn=dict_collate_fn)
+    ds_test = FeaturesDataset(target_model, x_data_test, y_data_test, ch.from_numpy(signals_test_y).float(), batch_size=1)
+    test_loader = ch.utils.data.DataLoader(ds_test, batch_size=1, shuffle=False, collate_fn=dict_collate_fn)
     # Convert list of dicts to list of dicts
-    test_preds = []
-    for batch in test_loader:
-        x, y = batch[0], batch[1]
-        # x_aug = ds.get_augmented_input(x, y)
-        x_ = {k: v.to(META_DEVICE) for k, v in x.items()}
-        preds = ch.nn.functional.sigmoid(meta_clf(x_)).detach().cpu().numpy()
-        # Take average pred
-        test_preds.append(preds)
-    test_preds = np.concatenate(test_preds)
+    """
+
+    if args.augment:
+        x_test_all = []
+        for x in x_data_test:
+            x_aug = ds.get_augmented_input(x.unsqueeze(0), None)
+            x_test_all.append(x_aug)
+        x_test_all = ch.stack(x_test_all, 0)
+        # Swap first 2 dims (generic)
+        x_test_all = x_test_all.permute(1, 0, *range(2, x_test_all.dim()))
+    else:
+        x_test_all = [x_data_test]
+
+    all_preds = []
+    for x_data_test in tqdm(x_test_all):
+        ds_test = FeaturesDataset(target_model, x_data_test, y_data_test, ch.from_numpy(signals_test_y).float(), batch_size=16)
+        test_loader = ch.utils.data.DataLoader(ds_test, batch_size=4, shuffle=False, collate_fn=dict_collate_fn)
+
+        test_preds = []
+        for batch in test_loader:
+            x, y = batch[0], batch[1]
+            x_ = {k: v.to(META_DEVICE) for k, v in x.items()}
+            preds = ch.nn.functional.sigmoid(meta_clf(x_)).detach().cpu().numpy()
+            # preds = preds.mean(0)
+            test_preds.extend(preds)
+        all_preds.append(test_preds)
+    all_preds = np.array(all_preds)
+
+    # Normalize across first dim (augmentations)
+    all_preds = all_preds.mean(0)
 
     # Compute ROC
-    auc = roc_auc_score(signals_test_y, test_preds)
+    auc = roc_auc_score(signals_test_y, all_preds)
     print(f"AUC: {auc}")
 
     # Clear memory
     ch.cuda.empty_cache()
 
     # Save predictions (kinda like this)
-    signals_in = test_preds[signals_test_y == 1]
-    signals_out = test_preds[signals_test_y == 0]
+    signals_in = all_preds[signals_test_y == 1]
+    signals_out = all_preds[signals_test_y == 0]
+
+    dir_to_make = f"/p/distinf/mib_cache/signals/{args.dataset}/{args.model_arch}/0"
+    if not os.path.exists(dir_to_make):
+        os.makedirs(dir_to_make)
     np.save(
-        f"/p/distinf/mib_cache/signals/{args.dataset}/unhinged_audit/0/MetaAudit.npy",
+        f"/p/distinf/mib_cache/signals/{args.dataset}/{args.model_arch}/0/MetaAudit.npy",
         {
             "in": signals_in,
             "out": signals_out,
@@ -168,6 +198,7 @@ if __name__ == "__main__":
     args.add_argument("--attack", type=str, default="MetaAudit")
     args.add_argument("--augment", action="store_true", help="Augment training data?")
     args.add_argument("--exp_seed", type=int, default=2024)
+    args.add_argument("--epochs", type=int, default=50)
     args.add_argument("--target_model_index", type=int, default=0)
 
     args = args.parse_args()

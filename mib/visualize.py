@@ -15,7 +15,8 @@ plt.rcParams["font.family"] = "Times New Roman"
 
 
 ATTACKS_TO_PLOT = [
-    # "LiRAOnline",
+    "LiRAOnline",
+    "LiRAOffline",
     "LiRAOnline_aug",
     "LOSS",
     "LiRAOnline_same_seed_ref",
@@ -32,13 +33,13 @@ ATTACKS_TO_PLOT = [
     # "LiRAOnline_aug_last5",
     # "Activations",
     "ActivationsOffline",
-    "TheoryRef"
+    "TheoryRef",
 ]
 
 
 def main(args):
     # signals_path = os.path.join(get_signals_path(), "unhinged_audit", str(args.model_index))
-    signals_path = os.path.join(get_signals_path(), args.dataset, str(args.model_index))
+    signals_path = os.path.join(get_signals_path(), args.dataset, args.model_arch, str(args.model_index))
 
     info = {}
     for attack in os.listdir(signals_path):
@@ -68,10 +69,10 @@ def main(args):
         }
         info[attack_name] = info_
 
-        # print(
-        #     "%s | AUC = %0.3f | TPR@0.1FPR=%0.3f | TPR@0.01FPR=%0.3f"
-        #     % (attack_name, roc_auc, info_["tpr@0.1fpr"], info_["tpr@0.01fpr"])
-        # )
+        print(
+            "%s | AUC = %0.3f | TPR@0.1FPR=%0.3f | TPR@0.01FPR=%0.3f"
+            % (attack_name, roc_auc, info_["tpr@0.1fpr"], info_["tpr@0.01fpr"])
+        )
 
     # Make sure plot directory exists
     if not os.path.exists(args.plotdir):
@@ -96,6 +97,7 @@ def main(args):
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
     args.add_argument("--model_index", type=int, default=0)
+    args.add_argument("--model_arch", type=str, default="wide_resnet_28_2")
     args.add_argument("--dataset", type=str, default="cifar10")
     args.add_argument("--plotdir", type=str, default="./plots")
     args = args.parse_args()

@@ -27,13 +27,14 @@ class MLP(nn.Module):
         get_all: bool = False,
     ):
         all_embeds = []
+        out = x
         for i, layer in enumerate(self.layers):
-            x = layer(x)
-            if get_all and i != len(self.layers) - 1:
+            out = layer(out)
+            if get_all and i != len(self.layers) - 1 and i % 2 == 1:
                 # Last layer is logits, will collect that anyway
-                all_embeds.append(x)
+                all_embeds.append(out)
 
         if get_all:
             return all_embeds
 
-        return x
+        return out

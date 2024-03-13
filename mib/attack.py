@@ -89,7 +89,7 @@ def member_nonmember_loaders(
     )
 
 
-def load_ref_models(model_dir, args):
+def load_ref_models(model_dir, args, num_classes: int):
     if args.same_seed_ref:
         folder_to_look_in = os.path.join(model_dir, f"same_init/{args.target_model_index}")
     else:
@@ -109,7 +109,7 @@ def load_ref_models(model_dir, args):
         # if m.split(".pt")[0].split("_")[0] == f"{args.target_model_index}":
         #    continue
 
-        model, _, _ = get_model(args.model_arch, 10)
+        model, _, _ = get_model(args.model_arch, num_classes)
         state_dict = ch.load(os.path.join(folder_to_look_in, m))
         ref_indices.append(state_dict["train_index"])
         model.load_state_dict(state_dict["model"], strict=False)
@@ -175,7 +175,7 @@ def main(args):
         attacker.register_trace(model_trace)
 
     if attacker.reference_based and not args.l_mode:
-        ref_models, ref_indices = load_ref_models(model_dir, args)
+        ref_models, ref_indices = load_ref_models(model_dir, args, ds.num_classes)
 
         # For each reference model, look at ref_indices and create a 'isin' based 2D bool-map
         # Using train_index_subset
@@ -290,7 +290,7 @@ def main(args):
     signals_in = np.concatenate(signals_in, 0)
     signals_out = np.concatenate(signals_out, 0)
     signals_dir = get_signals_path()
-    save_dir = os.path.join(signals_dir, args.dataset, str(args.target_model_index))
+    save_dir = os.path.join(signals_dir, args.dataset, args.model_arch, str(args.target_model_index))
 
     # Make sure save_dir exists
     if not os.path.exists(save_dir):

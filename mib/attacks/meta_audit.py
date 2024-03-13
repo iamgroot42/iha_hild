@@ -42,18 +42,102 @@ class MetaAudit(Attack):
 
 
 class MetaModePlain(nn.Module):
-    def __init__(self, input_dim, hidden_dims = [16, 8]):
+    def __init__(self, hidden_dim: int = 4, num_classes_data: int = 10):
         super().__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dims[0])
-        self.bn = nn.BatchNorm1d(hidden_dims[0])
-        self.fc2 = nn.Linear(hidden_dims[0], hidden_dims[1])
-        self.fc3 = nn.Linear(hidden_dims[1], 1)
+        # For activation
+        self.acts_0 = nn.Sequential(
+            nn.Linear(512, 64),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm1d(64),
+            nn.Linear(64, hidden_dim),
+            nn.ReLU(inplace=True),
+        )
+        self.acts_1 = nn.Sequential(
+            nn.Linear(256, 64),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm1d(64),
+            nn.Linear(64, hidden_dim),
+            nn.ReLU(inplace=True),
+        )
+        self.acts_2 = nn.Sequential(
+            nn.Linear(128, 32),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm1d(32),
+            nn.Linear(32, hidden_dim),
+            nn.ReLU(inplace=True),
+        )
+        self.acts_3 = nn.Sequential(
+            nn.Linear(64, 16),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm1d(16),
+            nn.Linear(16, hidden_dim),
+            nn.ReLU(inplace=True),
+        )
+        num_acts_use = 4
+        self.acts_all = nn.Sequential(
+            nn.Linear(num_acts_use * hidden_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True),
+        )
+        # Attention heads for intermediate activations
+        self.attention_acts = nn.MultiheadAttention(hidden_dim, 2)
 
-    def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = self.bn(x)
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
+        # For gradnorms
+        self.gradfc = nn.Sequential(nn.Linear(10, hidden_dim), nn.ReLU(inplace=True))
+
+        # For logits
+        self.logits_fc = nn.Sequential(
+            nn.Linear(num_classes_data, hidden_dim), nn.ReLU(inplace=True)
+        )
+
+        # Final connector
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_dim * 3 + 1, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, data):
+        # For activation
+        act_0 = data["activations_0"]
+        x_act0 = self.acts_0(act_0)
+        act_1 = data["activations_1"]
+        x_act1 = self.acts_1(act_1)
+        act_2 = data["activations_2"]
+        x_act2 = self.acts_2(act_2)
+        act_3 = data["activations_3"]
+        x_act3 = self.acts_3(act_3)
+
+        # ATTENTION
+        # x_acts = ch.stack((x_act0, x_act2, x_act4), 2)
+        x_acts = ch.stack((x_act0, x_act1, x_act2, x_act3), 2)
+        # 2nd dim is batch size, 1st dim is sequence length
+        x_acts = x_acts.permute(2, 0, 1)
+        x_acts, _ = self.attention_acts(x_acts, x_acts, x_acts)
+        x_acts = x_acts.permute(1, 0, 2)
+        # Bring it back into expected shape
+        x_acts = x_acts.reshape(x_acts.shape[0], -1)
+        # NO ATTENTION
+        # x_acts = ch.cat((x_act0, x_act2, x_act4), 1)
+
+        # Activations
+        x_acts = self.acts_all(x_acts)
+
+        # For gradnorms
+        gradnorms = data["gradnorms"]
+        x_gn = self.gradfc(gradnorms)
+
+        # For logits
+        logits = data["logits"]
+        x_lg = self.logits_fc(logits)
+
+        # Combine them all
+        loss = data["loss"]
+
+        x = ch.cat((x_acts, x_lg, loss), 1)
+        # x = ch.cat((x_acts, x_gn, x_lg, loss), 1)
+        x = self.fc(x)
+
         return x
 
 
@@ -134,7 +218,6 @@ class MetaModelCNN(nn.Module):
         # Final connector
         self.fc = nn.Sequential(nn.Linear(hidden_dim * 2 + 1, hidden_dim), nn.ReLU(inplace=True), nn.Linear(hidden_dim, 1))
 
-
     def forward(self, data):
         # For activation
         act_0 = data["activations_0"]
@@ -166,8 +249,8 @@ class MetaModelCNN(nn.Module):
         x_acts = self.acts_all(x_acts)
 
         # For gradnorms
-        # gradnorms = data["gradnorms"]
-        # x_gn = self.gradfc(gradnorms)
+        gradnorms = data["gradnorms"]
+        x_gn = self.gradfc(gradnorms)
 
         # For logits
         logits = data["logits"]
@@ -180,6 +263,20 @@ class MetaModelCNN(nn.Module):
         # x = ch.cat((x_acts, x_gn, x_lg, loss), 1)
         x = self.fc(x)
 
+        return x
+
+
+class MetaModelSiamese(nn.Module):
+    def __init__(self, feature_model, latent_dim: int):
+        super().__init__()
+        self.feature_model = feature_model
+        self.fc = nn.Sequential(nn.Linear(latent_dim * 2, latent_dim), nn.ReLU(inplace=True), nn.Linear(latent_dim, 1))
+    
+    def forward(self, x1, x2):
+        x1 = self.feature_model(x1)
+        x2 = self.feature_model(x2)
+        x = ch.cat((x1, x2), 1)
+        x = self.fc(x)
         return x
 
 
@@ -298,7 +395,9 @@ def train_meta_classifier(model, num_epochs: int,
 # Custom pytorch dataclass where (x_data, y_data, y) is stored
 # Real feature generation happens in collation step to maximize parallelism in model calls
 class FeaturesDataset(ch.utils.data.Dataset):
-    def __init__(self, model, x_data, y_data, y_member, batch_size: int, augment: bool = False):
+    def __init__(self, model, x_data, y_data, y_member,
+                 batch_size: int, augment: bool = False,
+                 pairwise: bool = False):
         self.model = copy.deepcopy(model)
         self.model.eval()
         self.model.cuda()
@@ -307,20 +406,13 @@ class FeaturesDataset(ch.utils.data.Dataset):
         self.y_member = y_member
         self.batch_size = batch_size
         self.augment = augment
+        self.pairwise = pairwise
 
     def __len__(self):
         return math.ceil(len(self.y_member) / self.batch_size)
 
-    def __getitem__(self, idx):
-        idx_start = idx * self.batch_size
-        idx_end = idx_start + self.batch_size
-        with ch.no_grad():
-            x_ = self.x_data[idx_start: idx_end]
-            y_ = self.y_data[idx_start: idx_end]
-
-            # Apply transforms if requested
-            if self.augment:
-                tf = transforms.Compose(
+    def get_transform(self):
+        return transforms.Compose(
                     [
                         # Bring back to [0, 1]
                         transforms.Normalize((-1), (2.0)),
@@ -333,11 +425,27 @@ class FeaturesDataset(ch.utils.data.Dataset):
                         transforms.Normalize((0.5), (0.5)),
                     ]
                 )
+
+    def __getitem__(self, idx):
+        idx_start = idx * self.batch_size
+        idx_end = idx_start + self.batch_size
+
+        with ch.no_grad():
+            x_ = self.x_data[idx_start: idx_end]
+            y_ = self.y_data[idx_start: idx_end]
+
+            # Apply transforms if requested
+            if self.augment:
+                tf = self.get_transform()
                 # Apply instance-wise transform
                 x_ = ch.stack([tf(z) for z in x_], 0)
 
-        features = self.get_signals(x_, y_)
-        return features, self.y_member[idx_start: idx_end]
+        if self.pairwise:
+            # Take random pairs of data points
+            raise ValueError("Pairwise not implemented!")
+        else:
+            features = self.get_signals(x_, y_)
+            return features, self.y_member[idx_start: idx_end]
 
     def get_signals(self, x, y):
         x_, y_ = x.cuda(), y.cuda()
@@ -348,12 +456,12 @@ class FeaturesDataset(ch.utils.data.Dataset):
         self.model.zero_grad()
         y_hat = self.model(x_)
 
-        # """
+        """
         losses = ch.nn.CrossEntropyLoss(reduction="none")(y_hat, y_).detach().cpu().unsqueeze(1)
         # gradnorms = ch.zeros(len(y_), 108)
-        # """
-
         """
+
+        # """
         # Might as well take note of logits
         losses, gradnorms = [], []
         # Compute element-wise loss and grad norm
@@ -370,22 +478,16 @@ class FeaturesDataset(ch.utils.data.Dataset):
             gradnorms.append(gnorms)
         losses = ch.stack(losses).cpu().unsqueeze(1)
         gradnorms = ch.stack(gradnorms).cpu()
-        """
+        # """
 
-        # Return
         m = {
-            "activations_0": acts[0].detach().cpu(),
-            "activations_1": acts[1].detach().cpu(),
-            "activations_2": acts[2].detach().cpu(),
-            "activations_3": acts[3].detach().cpu(),
-            "activations_4": acts[4].detach().cpu(),
-            "activations_5": acts[5].detach().cpu(),
             "logits": y_hat.detach().cpu(),
             "loss": losses,
-            # "gradnorms": gradnorms,
+            "gradnorms": gradnorms,
         }
-        # for k, v in m.items():
-        #    print(k, v.shape)
+        for i in range(len(acts)):
+            m[f"activations_{i}"] = acts[i].detach().cpu()
+
         return m
 
 
