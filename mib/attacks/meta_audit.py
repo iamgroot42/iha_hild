@@ -42,8 +42,9 @@ class MetaAudit(Attack):
 
 
 class MetaModePlain(nn.Module):
-    def __init__(self, hidden_dim: int = 4, num_classes_data: int = 10):
+    def __init__(self, hidden_dim: int = 4, num_classes_data: int = 10, feature_mode: bool = False):
         super().__init__()
+        self.feature_mode = feature_mode
         # For activation
         self.acts_0 = nn.Sequential(
             nn.Linear(512, 64),
@@ -83,7 +84,7 @@ class MetaModePlain(nn.Module):
         self.attention_acts = nn.MultiheadAttention(hidden_dim, 2)
 
         # For gradnorms
-        self.gradfc = nn.Sequential(nn.Linear(10, hidden_dim), nn.ReLU(inplace=True))
+        # self.gradfc = nn.Sequential(nn.Linear(10, hidden_dim), nn.ReLU(inplace=True))
 
         # For logits
         self.logits_fc = nn.Sequential(
@@ -91,11 +92,13 @@ class MetaModePlain(nn.Module):
         )
 
         # Final connector
-        self.fc = nn.Sequential(
-            nn.Linear(hidden_dim * 3 + 1, hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, 1),
-        )
+        self.latent_dim = hidden_dim * 2 + 1
+        if not self.feature_mode:
+            self.fc = nn.Sequential(
+                nn.Linear(self.latent_dim, hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Linear(hidden_dim, 1),
+            )
 
     def forward(self, data):
         # For activation
@@ -124,8 +127,8 @@ class MetaModePlain(nn.Module):
         x_acts = self.acts_all(x_acts)
 
         # For gradnorms
-        gradnorms = data["gradnorms"]
-        x_gn = self.gradfc(gradnorms)
+        # gradnorms = data["gradnorms"]
+        # x_gn = self.gradfc(gradnorms)
 
         # For logits
         logits = data["logits"]
@@ -136,14 +139,18 @@ class MetaModePlain(nn.Module):
 
         x = ch.cat((x_acts, x_lg, loss), 1)
         # x = ch.cat((x_acts, x_gn, x_lg, loss), 1)
+        if self.feature_mode:
+            return x
+
         x = self.fc(x)
 
         return x
 
 
 class MetaModelCNN(nn.Module):
-    def __init__(self, hidden_dim: int = 4, num_classes_data: int = 10):
+    def __init__(self, hidden_dim: int = 4, num_classes_data: int = 10, feature_mode: bool = False):
         super().__init__()
+        self.feature_mode = feature_mode
         # For activation
         self.acts_0 = nn.Sequential(
             nn.Conv2d(16, 6, 5),
@@ -216,7 +223,13 @@ class MetaModelCNN(nn.Module):
         # For batch-norm distances
 
         # Final connector
-        self.fc = nn.Sequential(nn.Linear(hidden_dim * 2 + 1, hidden_dim), nn.ReLU(inplace=True), nn.Linear(hidden_dim, 1))
+        self.latent_dim = hidden_dim * 2 + 1
+        if not self.feature_mode:
+            self.fc = nn.Sequential(
+                nn.Linear(self.latent_dim, hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Linear(hidden_dim, 1),
+            )
 
     def forward(self, data):
         # For activation
@@ -249,8 +262,8 @@ class MetaModelCNN(nn.Module):
         x_acts = self.acts_all(x_acts)
 
         # For gradnorms
-        gradnorms = data["gradnorms"]
-        x_gn = self.gradfc(gradnorms)
+        # gradnorms = data["gradnorms"]
+        # x_gn = self.gradfc(gradnorms)
 
         # For logits
         logits = data["logits"]
@@ -261,20 +274,33 @@ class MetaModelCNN(nn.Module):
 
         x = ch.cat((x_acts, x_lg, loss), 1)
         # x = ch.cat((x_acts, x_gn, x_lg, loss), 1)
+
+        if self.feature_mode:
+            return x
         x = self.fc(x)
 
         return x
 
 
 class MetaModelSiamese(nn.Module):
-    def __init__(self, feature_model, latent_dim: int):
+    def __init__(self, feature_model):
         super().__init__()
         self.feature_model = feature_model
+        latent_dim = self.feature_model.latent_dim
         self.fc = nn.Sequential(nn.Linear(latent_dim * 2, latent_dim), nn.ReLU(inplace=True), nn.Linear(latent_dim, 1))
-    
-    def forward(self, x1, x2):
-        x1 = self.feature_model(x1)
-        x2 = self.feature_model(x2)
+
+    def get_feature_emb(self, x):
+        return self.feature_model(x)
+
+    def forward(self, data_pair, precomputed: bool = False):
+        data_left = data_pair["left"]
+        data_right = data_pair["right"]
+        if precomputed:
+            x1 = data_left
+            x2 = data_right
+        else:
+            x1 = self.get_feature_emb(data_left)
+            x2 = self.get_feature_emb(data_right)
         x = ch.cat((x1, x2), 1)
         x = self.fc(x)
         return x
@@ -286,7 +312,8 @@ def train_meta_classifier(model, num_epochs: int,
                           weight_decay: float=5e-4,
                           verbose: bool = True,
                           get_best_val: bool = False,
-                          device: str = "cuda"):
+                          device: str = "cuda",
+                          pairwise: bool = False):
     # optimizer = ch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     optimizer = ch.optim.SGD(model.parameters(), lr=5e-2, weight_decay=weight_decay, momentum=0.9)
     scheduler = ch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
@@ -317,7 +344,12 @@ def train_meta_classifier(model, num_epochs: int,
         for batch in train_loader:
             x, y = batch
             y = y.to(device)
-            x_ = {k: v.to(device) for k, v in x.items()}
+            if pairwise:
+                x_ = {"left": {}, "right": {}}
+                x_["left"] = {k: v.to(device) for k, v in x["left"].items()}
+                x_["right"] = {k: v.to(device) for k, v in x["right"].items()}
+            else:
+                x_ = {k: v.to(device) for k, v in x.items()}
 
             optimizer.zero_grad()
             y_hat = model(x_).view(-1)
@@ -347,7 +379,13 @@ def train_meta_classifier(model, num_epochs: int,
                 for batch in val_loader:
                     x, y = batch
                     y = y.to(device)
-                    x_ = {k: v.to(device) for k, v in x.items()}
+                    if pairwise:
+                        x_ = {"left": {}, "right": {}}
+                        x_["left"] = {k: v.to(device) for k, v in x["left"].items()}
+                        x_["right"] = {k: v.to(device) for k, v in x["right"].items()}
+                    else:
+                        x_ = {k: v.to(device) for k, v in x.items()}
+
                     y_hat = model(x_).view(-1)
                     val_loss, _ = get_loss_and_acc(y_hat, y)
                     vloss += val_loss.item()
@@ -392,12 +430,52 @@ def train_meta_classifier(model, num_epochs: int,
     return model
 
 
-# Custom pytorch dataclass where (x_data, y_data, y) is stored
-# Real feature generation happens in collation step to maximize parallelism in model calls
+class PairwiseFeaturesDataset(ch.utils.data.Dataset):
+    """
+    Wrapper that takes in FeaturesDataset and returns pairs of data points
+    """
+    def __init__(self, features_dataset):
+        self.features_dataset = features_dataset
+
+    def __len__(self):
+        # N choose 2
+        return 15_000
+        # return math.comb(len(self.features_dataset), 2)
+
+    def __getitem__(self, idx):
+        # Make sure idx is within limits
+        idx = idx % len(self.features_dataset)
+        features_1, y_1 = self.features_dataset[idx]
+        # Get data for another random index
+        other_idx = np.random.choice(len(self.features_dataset))
+        features_2, y_2 = self.features_dataset[other_idx]
+        # Construct pair-wise combinations of this data (features_1, features_2 are each dicts with B-length elements inside)
+        feature_branches = {
+            "left": {k: [] for k in features_1.keys()},
+            "right": {k: [] for k in features_1.keys()},
+        }
+        matching_labels = []
+        for i in range(len(y_1)):
+            for j in range(len(y_2)):
+                for k, v in features_1.items():
+                    feature_branches["left"][k].append(v[i])
+                    feature_branches["right"][k].append(features_2[k][j])
+                matching_labels.append(1 * (y_1[i] == y_2[j]).item())
+
+        for k, v in feature_branches["left"].items():
+            feature_branches["left"][k] = ch.stack(v, 0)
+            feature_branches["right"][k] = ch.stack(feature_branches["right"][k], 0)
+
+        return feature_branches, ch.tensor(matching_labels).float()
+
+
 class FeaturesDataset(ch.utils.data.Dataset):
+    """
+    Custom pytorch dataclass where (x_data, y_data, y) is stored
+    Real feature generation happens in collation step to maximize parallelism in model calls
+    """
     def __init__(self, model, x_data, y_data, y_member,
-                 batch_size: int, augment: bool = False,
-                 pairwise: bool = False):
+                 batch_size: int, augment: bool = False):
         self.model = copy.deepcopy(model)
         self.model.eval()
         self.model.cuda()
@@ -406,7 +484,6 @@ class FeaturesDataset(ch.utils.data.Dataset):
         self.y_member = y_member
         self.batch_size = batch_size
         self.augment = augment
-        self.pairwise = pairwise
 
     def __len__(self):
         return math.ceil(len(self.y_member) / self.batch_size)
@@ -440,12 +517,8 @@ class FeaturesDataset(ch.utils.data.Dataset):
                 # Apply instance-wise transform
                 x_ = ch.stack([tf(z) for z in x_], 0)
 
-        if self.pairwise:
-            # Take random pairs of data points
-            raise ValueError("Pairwise not implemented!")
-        else:
-            features = self.get_signals(x_, y_)
-            return features, self.y_member[idx_start: idx_end]
+        features = self.get_signals(x_, y_)
+        return features, self.y_member[idx_start: idx_end]
 
     def get_signals(self, x, y):
         x_, y_ = x.cuda(), y.cuda()
@@ -456,12 +529,12 @@ class FeaturesDataset(ch.utils.data.Dataset):
         self.model.zero_grad()
         y_hat = self.model(x_)
 
-        """
+        # """
         losses = ch.nn.CrossEntropyLoss(reduction="none")(y_hat, y_).detach().cpu().unsqueeze(1)
         # gradnorms = ch.zeros(len(y_), 108)
-        """
-
         # """
+
+        """
         # Might as well take note of logits
         losses, gradnorms = [], []
         # Compute element-wise loss and grad norm
@@ -478,12 +551,12 @@ class FeaturesDataset(ch.utils.data.Dataset):
             gradnorms.append(gnorms)
         losses = ch.stack(losses).cpu().unsqueeze(1)
         gradnorms = ch.stack(gradnorms).cpu()
-        # """
+        """
 
         m = {
             "logits": y_hat.detach().cpu(),
             "loss": losses,
-            "gradnorms": gradnorms,
+            # "gradnorms": gradnorms,
         }
         for i in range(len(acts)):
             m[f"activations_{i}"] = acts[i].detach().cpu()
@@ -494,14 +567,29 @@ class FeaturesDataset(ch.utils.data.Dataset):
 def dict_collate_fn(batch):
     y = ch.cat([b[1] for b in batch])
     # List of dicts. Convert to dict of tensors
-    x = {}
+    x = {k: [] for k in batch[0][0].keys()}
     for b in batch:
         for k, v in b[0].items():
-            if k not in x:
-                x[k] = []
             x[k].append(v)
     for k, v in x.items():
         x[k] = ch.cat(v, 0)
+
+    return x, y
+
+
+def dict_collate_fn_pairwise(batch):
+    y = ch.cat([b[1] for b in batch])
+    # List of dicts. Convert to dict of tensors
+    x = {}
+    x["left"] = {k: [] for k in batch[0][0]["left"].keys()}
+    x["right"] = {k: [] for k in batch[0][0]["right"].keys()}
+    for b in batch:
+        for k in b[0]["left"].keys():
+            x["left"][k].append(b[0]["left"][k])
+            x["right"][k].append(b[0]["right"][k])
+    for k, v in x["left"].items():
+        x["left"][k] = ch.cat(v, 0)
+        x["right"][k] = ch.cat(x["right"][k], 0)
 
     return x, y
 
@@ -511,7 +599,8 @@ def train_meta_clf(meta_clf, model, x_both, y,
                    num_epochs: int = 10,
                    val_points: int = 1000,
                    device: str = "cuda",
-                   augment: bool = False):
+                   augment: bool = False,
+                   pairwise: bool = False):
     x, y_data = x_both
 
     # Sample points for validation using train-test split
@@ -530,6 +619,11 @@ def train_meta_clf(meta_clf, model, x_both, y,
     y_val = np.repeat(y_val, n_reps)
     """
 
+    if pairwise:
+        collate_fn_use = dict_collate_fn_pairwise
+    else:
+        collate_fn_use = dict_collate_fn
+
     # Make loader out of (x, y) data
     ds_train = FeaturesDataset(
         model,
@@ -539,24 +633,31 @@ def train_meta_clf(meta_clf, model, x_both, y,
         batch_size=batch_size,
         augment=augment,
     )
+    if pairwise:
+        ds_train = PairwiseFeaturesDataset(ds_train)
     train_loader = ch.utils.data.DataLoader(ds_train, batch_size=4, shuffle=True,
                                             num_workers=4,
                                             prefetch_factor=4,
                                             pin_memory=True,
-                                            collate_fn=dict_collate_fn)
+                                            collate_fn=collate_fn_use)
 
     # Make loader out of (x, y) data
     ds_val = FeaturesDataset(
         model, x_val, y_data_val,
         ch.from_numpy(y_val).float(),
         batch_size=batch_size)
+    if pairwise:
+        ds_val = PairwiseFeaturesDataset(ds_val)
     val_loader = ch.utils.data.DataLoader(ds_val, batch_size=4, shuffle=False,
                                           num_workers=4,
                                           prefetch_factor=4,
                                           pin_memory=True,
-                                          collate_fn=dict_collate_fn)
+                                          collate_fn=collate_fn_use)
 
-    meta_clf_trained = train_meta_classifier(meta_clf, num_epochs, train_loader, val_loader, get_best_val=True, device=device)
+    meta_clf_trained = train_meta_classifier(meta_clf, num_epochs, train_loader, val_loader,
+                                             get_best_val=True,
+                                             device=device,
+                                             pairwise=pairwise)
 
     """
     wrapped_meta = LitMetaModel(meta_clf)

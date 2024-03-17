@@ -26,6 +26,7 @@ from mib.attacks.meta_audit import (
     train_meta_clf,
     MetaModelCNN,
     MetaModePlain,
+    MetaModelSiamese,
     FeaturesDataset,
     dict_collate_fn
 )
@@ -113,19 +114,30 @@ def main(args):
 
     # Create meta-classifier
     if args.dataset == "purchase100":
-        meta_clf = MetaModePlain(num_classes_data=ds.num_classes)
+        meta_clf = MetaModePlain(
+            num_classes_data=ds.num_classes, feature_mode=args.pairwise
+        )
     else:
-        meta_clf = MetaModelCNN(num_classes_data=ds.num_classes)
+        meta_clf = MetaModelCNN(
+            num_classes_data=ds.num_classes, feature_mode=args.pairwise
+        )
+
+    if args.pairwise:
+        meta_clf = MetaModelSiamese(meta_clf)
+
+    batch_size = 8 if args.pairwise else 64
+
     meta_clf = train_meta_clf(
         meta_clf,
         target_model,
         (x_data_train, y_data_train),
         signals_train_y,
-        batch_size=64,
-        val_points=250,
+        batch_size=batch_size,
+        val_points=100,#250,
         num_epochs=args.epochs,
         device=META_DEVICE,
         augment=args.augment,
+        pairwise=args.pairwise,
     )
     meta_clf.eval()
 
@@ -156,12 +168,31 @@ def main(args):
         test_loader = ch.utils.data.DataLoader(ds_test, batch_size=4, shuffle=False, collate_fn=dict_collate_fn)
 
         test_preds = []
+        collected_features = []
         for batch in test_loader:
             x, y = batch[0], batch[1]
             x_ = {k: v.to(META_DEVICE) for k, v in x.items()}
-            preds = ch.nn.functional.sigmoid(meta_clf(x_)).detach().cpu().numpy()
-            # preds = preds.mean(0)
-            test_preds.extend(preds)
+
+            if args.pairwise:
+                embed = meta_clf.get_feature_emb(x_).detach()
+                collected_features.append(embed)
+            else:
+                preds = ch.nn.functional.sigmoid(meta_clf(x_)).detach().cpu().numpy()
+                # preds = preds.mean(0)
+                test_preds.extend(preds)
+
+        if args.pairwise:
+            collected_features = ch.cat(collected_features, 0)
+            for i in range(len(collected_features)):
+                # Construct inputs (collected_features[i], collected_features[j]) for varying j
+                inputs = {"left": collected_features[i].unsqueeze(0).repeat(len(collected_features), 1), "right": collected_features}
+                outputs = ch.nn.functional.sigmoid(meta_clf(inputs, precomputed=True)).detach().cpu().numpy()
+                # Aggregate prediction as weighted sum of predicted output (which tells you whether same class or not) and corresponding ground-truth labels
+                weighted_pred = outputs * signals_test_y
+                # Of course, skip ith point (like, do not count it in mean)
+                weighted_pred[i] = None
+                test_preds.append(np.nanmean(weighted_pred))
+
         all_preds.append(test_preds)
     all_preds = np.array(all_preds)
 
@@ -197,6 +228,7 @@ if __name__ == "__main__":
     args.add_argument("--dataset", type=str, default="cifar10")
     args.add_argument("--attack", type=str, default="MetaAudit")
     args.add_argument("--augment", action="store_true", help="Augment training data?")
+    args.add_argument("--pairwise", action="store_true", help="Pairwise meta-classifier?")
     args.add_argument("--exp_seed", type=int, default=2024)
     args.add_argument("--epochs", type=int, default=50)
     args.add_argument("--target_model_index", type=int, default=0)
