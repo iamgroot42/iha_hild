@@ -188,7 +188,11 @@ def main(args):
                 inputs = {"left": collected_features[i].unsqueeze(0).repeat(len(collected_features), 1), "right": collected_features}
                 outputs = ch.nn.functional.sigmoid(meta_clf(inputs, precomputed=True)).detach().cpu().numpy()
                 # Aggregate prediction as weighted sum of predicted output (which tells you whether same class or not) and corresponding ground-truth labels
-                weighted_pred = outputs * signals_test_y
+
+                # We essentially want P(y=1)
+                weighted_pred = np.zeros_like(outputs)
+                weighted_pred[signals_test_y == 1] = outputs[signals_test_y == 1]
+                weighted_pred[signals_test_y == 0] = 1 - outputs[signals_test_y == 0]
                 # Of course, skip ith point (like, do not count it in mean)
                 weighted_pred[i] = None
                 test_preds.append(np.nanmean(weighted_pred))

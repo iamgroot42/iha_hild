@@ -14,6 +14,7 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 
 from mib.attacks.base import Attack
+from mib.utils import meta_run_cache
 from sklearn.metrics import roc_auc_score
 
 import matplotlib.pyplot as plt
@@ -314,10 +315,11 @@ def train_meta_classifier(model, num_epochs: int,
                           get_best_val: bool = False,
                           device: str = "cuda",
                           pairwise: bool = False):
-    # optimizer = ch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    optimizer = ch.optim.SGD(model.parameters(), lr=5e-2, weight_decay=weight_decay, momentum=0.9)
-    scheduler = ch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
-    # scheduler = None
+    optimizer = ch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    # optimizer = ch.optim.SGD(model.parameters(), lr=5e-2, weight_decay=weight_decay, momentum=0.9)
+    # optimizer = ch.optim.SGD(model.parameters(), lr=1e-1, weight_decay=weight_decay, momentum=0.9)
+    scheduler = None
+    # scheduler = ch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
     model.to(device)
 
     def get_loss_and_acc(y_hat, y):
@@ -434,17 +436,17 @@ class PairwiseFeaturesDataset(ch.utils.data.Dataset):
     """
     Wrapper that takes in FeaturesDataset and returns pairs of data points
     """
-    def __init__(self, features_dataset):
+    def __init__(self, features_dataset, n_task: int):
         self.features_dataset = features_dataset
+        self.n_task = n_task
 
     def __len__(self):
-        # N choose 2
-        return 15_000
-        # return math.comb(len(self.features_dataset), 2)
+        return self.n_task
 
     def __getitem__(self, idx):
+        idx = np.random.choice(len(self.features_dataset))
         # Make sure idx is within limits
-        idx = idx % len(self.features_dataset)
+        # idx = idx % len(self.features_dataset)
         features_1, y_1 = self.features_dataset[idx]
         # Get data for another random index
         other_idx = np.random.choice(len(self.features_dataset))
@@ -634,7 +636,7 @@ def train_meta_clf(meta_clf, model, x_both, y,
         augment=augment,
     )
     if pairwise:
-        ds_train = PairwiseFeaturesDataset(ds_train)
+        ds_train = PairwiseFeaturesDataset(ds_train, n_task=20_000)
     train_loader = ch.utils.data.DataLoader(ds_train, batch_size=4, shuffle=True,
                                             num_workers=4,
                                             prefetch_factor=4,
@@ -647,7 +649,7 @@ def train_meta_clf(meta_clf, model, x_both, y,
         ch.from_numpy(y_val).float(),
         batch_size=batch_size)
     if pairwise:
-        ds_val = PairwiseFeaturesDataset(ds_val)
+        ds_val = PairwiseFeaturesDataset(ds_val, n_task=3_000)
     val_loader = ch.utils.data.DataLoader(ds_val, batch_size=4, shuffle=False,
                                           num_workers=4,
                                           prefetch_factor=4,

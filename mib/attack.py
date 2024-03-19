@@ -9,6 +9,7 @@ import numpy as np
 from tqdm import tqdm
 
 from mib.models.utils import get_model
+from sklearn.metrics import roc_curve, auc
 from mib.dataset.utils import get_dataset
 from mib.attacks.utils import get_attack
 from mib.utils import get_signals_path, get_models_path
@@ -306,6 +307,13 @@ def main(args):
         suffix = f"_{args.suffix}"
     if args.aug:
         attack_name += "_aug"
+    
+    # Print out ROC
+    total_labels = [0] * len(signals_out) + [1] * len(signals_in)
+    total_preds = np.concatenate((signals_out, signals_in))
+    fpr, tpr, _ = roc_curve(total_labels, total_preds)
+    roc_auc = auc(fpr, tpr)
+    print("AUC: %.3f" % roc_auc)
 
     np.save(
         f"{save_dir}/{attack_name}{suffix}.npy",

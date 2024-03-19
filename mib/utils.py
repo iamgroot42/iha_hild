@@ -49,3 +49,14 @@ def get_data_source():
         raise ValueError("MIB_DATA_SOURCE environment variable not set")
     return DATA_SOURCE
 
+
+def meta_run_cache():
+    """
+        Cache for dumping run-wise processed features
+        to speed up meta-classifier training.
+        Returns:
+            str: path to cache directory
+    """
+    if CACHE_PATH is None:
+        raise ValueError("MIB_CACHE_SOURCE environment variable not set")
+    return os.path.join(CACHE_PATH, "meta_run_cache")
