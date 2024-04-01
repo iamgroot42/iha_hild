@@ -28,7 +28,8 @@ from mib.attacks.meta_audit import (
     MetaModePlain,
     MetaModelSiamese,
     FeaturesDataset,
-    dict_collate_fn
+    dict_collate_fn,
+    test_meta,
 )
 
 
@@ -115,11 +116,17 @@ def main(args):
     # Create meta-classifier
     if args.dataset == "purchase100":
         meta_clf = MetaModePlain(
-            num_classes_data=ds.num_classes, feature_mode=args.pairwise
+            num_classes_data=ds.num_classes,
+            feature_mode=args.pairwise,
+            hidden_dim=args.meta_dim,
+            use_grad_norms=args.use_grad_norms
         )
     else:
         meta_clf = MetaModelCNN(
-            num_classes_data=ds.num_classes, feature_mode=args.pairwise
+            num_classes_data=ds.num_classes,
+            feature_mode=args.pairwise,
+            hidden_dim=args.meta_dim,
+            use_grad_norms=args.use_grad_norms
         )
 
     if args.pairwise:
@@ -133,11 +140,12 @@ def main(args):
         (x_data_train, y_data_train),
         signals_train_y,
         batch_size=batch_size,
-        val_points=100,#250,
+        val_points=100,  # 250,
         num_epochs=args.epochs,
         device=META_DEVICE,
         augment=args.augment,
         pairwise=args.pairwise,
+        use_grad_norms=args.use_grad_norms,
     )
     meta_clf.eval()
 
@@ -164,38 +172,12 @@ def main(args):
 
     all_preds = []
     for x_data_test in tqdm(x_test_all):
-        ds_test = FeaturesDataset(target_model, x_data_test, y_data_test, ch.from_numpy(signals_test_y).float(), batch_size=16)
+        ds_test = FeaturesDataset(target_model, x_data_test, y_data_test, ch.from_numpy(signals_test_y).float(),
+                                  batch_size=16, use_grad_norms=args.use_grad_norms)
         test_loader = ch.utils.data.DataLoader(ds_test, batch_size=4, shuffle=False, collate_fn=dict_collate_fn)
 
-        test_preds = []
-        collected_features = []
-        for batch in test_loader:
-            x, y = batch[0], batch[1]
-            x_ = {k: v.to(META_DEVICE) for k, v in x.items()}
-
-            if args.pairwise:
-                embed = meta_clf.get_feature_emb(x_).detach()
-                collected_features.append(embed)
-            else:
-                preds = ch.nn.functional.sigmoid(meta_clf(x_)).detach().cpu().numpy()
-                # preds = preds.mean(0)
-                test_preds.extend(preds)
-
-        if args.pairwise:
-            collected_features = ch.cat(collected_features, 0)
-            for i in range(len(collected_features)):
-                # Construct inputs (collected_features[i], collected_features[j]) for varying j
-                inputs = {"left": collected_features[i].unsqueeze(0).repeat(len(collected_features), 1), "right": collected_features}
-                outputs = ch.nn.functional.sigmoid(meta_clf(inputs, precomputed=True)).detach().cpu().numpy()
-                # Aggregate prediction as weighted sum of predicted output (which tells you whether same class or not) and corresponding ground-truth labels
-
-                # We essentially want P(y=1)
-                weighted_pred = np.zeros_like(outputs)
-                weighted_pred[signals_test_y == 1] = outputs[signals_test_y == 1]
-                weighted_pred[signals_test_y == 0] = 1 - outputs[signals_test_y == 0]
-                # Of course, skip ith point (like, do not count it in mean)
-                weighted_pred[i] = None
-                test_preds.append(np.nanmean(weighted_pred))
+        # Test meta-classifier
+        test_preds = test_meta(meta_clf, test_loader, signals_test_y, args, META_DEVICE)
 
         all_preds.append(test_preds)
     all_preds = np.array(all_preds)
@@ -233,8 +215,10 @@ if __name__ == "__main__":
     args.add_argument("--attack", type=str, default="MetaAudit")
     args.add_argument("--augment", action="store_true", help="Augment training data?")
     args.add_argument("--pairwise", action="store_true", help="Pairwise meta-classifier?")
+    args.add_argument("--use_grad_norms", action="store_true", help="Use gradient norms?")
     args.add_argument("--exp_seed", type=int, default=2024)
     args.add_argument("--epochs", type=int, default=50)
+    args.add_argument("--meta_dim", type=int, default=4)
     args.add_argument("--target_model_index", type=int, default=0)
 
     args = args.parse_args()

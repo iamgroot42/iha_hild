@@ -21,15 +21,13 @@ class MLP(nn.Module):
         self.layers.append(nn.Linear(layer_depths[-1], num_classes))
         self.layers = nn.ModuleList(self.layers)
 
-    def forward(
-        self,
-        x,
-        get_all: bool = False,
-    ):
+    def forward(self, x, get_all: bool = False, layer_readout: int = None):
         all_embeds = []
         out = x
         for i, layer in enumerate(self.layers):
             out = layer(out)
+            if layer_readout == i:
+                return out
             if get_all and i != len(self.layers) - 1 and i % 2 == 1:
                 # Last layer is logits, will collect that anyway
                 all_embeds.append(out)

@@ -17,6 +17,8 @@ from mib.attacks.base import Attack
 from mib.utils import meta_run_cache
 from sklearn.metrics import roc_auc_score
 
+from torch.func import functional_call, vmap, grad
+
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 
@@ -43,9 +45,17 @@ class MetaAudit(Attack):
 
 
 class MetaModePlain(nn.Module):
-    def __init__(self, hidden_dim: int = 4, num_classes_data: int = 10, feature_mode: bool = False):
+
+    def __init__(
+        self,
+        hidden_dim: int = 4,
+        num_classes_data: int = 10,
+        feature_mode: bool = False,
+        use_grad_norms: bool = False):
         super().__init__()
         self.feature_mode = feature_mode
+        self.use_grad_norms = use_grad_norms
+
         # For activation
         self.acts_0 = nn.Sequential(
             nn.Linear(512, 64),
@@ -85,15 +95,19 @@ class MetaModePlain(nn.Module):
         self.attention_acts = nn.MultiheadAttention(hidden_dim, 2)
 
         # For gradnorms
-        # self.gradfc = nn.Sequential(nn.Linear(10, hidden_dim), nn.ReLU(inplace=True))
+        if self.use_grad_norms:
+            self.gradfc = nn.Sequential(nn.Linear(10, hidden_dim), nn.ReLU(inplace=True))
 
         # For logits
         self.logits_fc = nn.Sequential(
             nn.Linear(num_classes_data, hidden_dim), nn.ReLU(inplace=True)
         )
 
+        # Embedding layer for data labels
+        self.label_embed = nn.Embedding(num_classes_data, hidden_dim)
+
         # Final connector
-        self.latent_dim = hidden_dim * 2 + 1
+        self.latent_dim = hidden_dim * (4 if self.use_grad_norms else 3) + 1
         if not self.feature_mode:
             self.fc = nn.Sequential(
                 nn.Linear(self.latent_dim, hidden_dim),
@@ -128,18 +142,25 @@ class MetaModePlain(nn.Module):
         x_acts = self.acts_all(x_acts)
 
         # For gradnorms
-        # gradnorms = data["gradnorms"]
-        # x_gn = self.gradfc(gradnorms)
+        if self.use_grad_norms:
+            gradnorms = data["gradnorms"]
+            x_gn = self.gradfc(gradnorms)
 
         # For logits
         logits = data["logits"]
         x_lg = self.logits_fc(logits)
 
+        # Label embed
+        labels = data["labels"]
+        x_lb = self.label_embed(labels)
+
         # Combine them all
         loss = data["loss"]
 
-        x = ch.cat((x_acts, x_lg, loss), 1)
-        # x = ch.cat((x_acts, x_gn, x_lg, loss), 1)
+        if self.use_grad_norms:
+            x = ch.cat((x_acts, x_gn, x_lg, x_lb, loss), 1)
+        else:
+            x = ch.cat((x_acts, x_lg, x_lb, loss), 1)
         if self.feature_mode:
             return x
 
@@ -149,9 +170,10 @@ class MetaModePlain(nn.Module):
 
 
 class MetaModelCNN(nn.Module):
-    def __init__(self, hidden_dim: int = 4, num_classes_data: int = 10, feature_mode: bool = False):
+    def __init__(self, hidden_dim: int = 4, num_classes_data: int = 10, feature_mode: bool = False, use_grad_norms: bool = False):
         super().__init__()
         self.feature_mode = feature_mode
+        self.use_grad_norms = use_grad_norms
         # For activation
         self.acts_0 = nn.Sequential(
             nn.Conv2d(16, 6, 5),
@@ -210,21 +232,22 @@ class MetaModelCNN(nn.Module):
         self.acts_5 = nn.Sequential(nn.Linear(128, hidden_dim), nn.BatchNorm1d(hidden_dim), nn.ReLU(inplace=True))
         num_acts_use = 6
         self.acts_all = nn.Sequential(nn.Linear(num_acts_use * hidden_dim, hidden_dim), nn.BatchNorm1d(hidden_dim), nn.ReLU(inplace=True))
-        # self.acts_all = nn.Sequential(nn.Linear(6 * hidden_dim, hidden_dim), nn.BatchNorm1d(hidden_dim), nn.ReLU(inplace=True))
 
         # Attention heads for intermediate activations
         self.attention_acts = nn.MultiheadAttention(hidden_dim, 2)
 
         # For gradnorms
-        # self.gradfc = nn.Sequential(nn.Linear(108, 32), nn.BatchNorm1d(32), nn.ReLU(inplace=True), nn.Linear(32, hidden_dim), nn.ReLU(inplace=True))
+        if self.use_grad_norms:
+            self.gradfc = nn.Sequential(nn.Linear(108, 32), nn.BatchNorm1d(32), nn.ReLU(inplace=True), nn.Linear(32, hidden_dim), nn.ReLU(inplace=True))
 
         # For logits
         self.logits_fc = nn.Sequential(nn.Linear(num_classes_data, hidden_dim), nn.ReLU(inplace=True))
 
-        # For batch-norm distances
+        # Embedding layer for data labels
+        self.label_embed = nn.Embedding(num_classes_data, hidden_dim)
 
         # Final connector
-        self.latent_dim = hidden_dim * 2 + 1
+        self.latent_dim = hidden_dim * (4 if self.use_grad_norms else 3) + 1
         if not self.feature_mode:
             self.fc = nn.Sequential(
                 nn.Linear(self.latent_dim, hidden_dim),
@@ -263,18 +286,26 @@ class MetaModelCNN(nn.Module):
         x_acts = self.acts_all(x_acts)
 
         # For gradnorms
-        # gradnorms = data["gradnorms"]
-        # x_gn = self.gradfc(gradnorms)
+        if self.use_grad_norms:
+            gradnorms = data["gradnorms"]
+            x_gn = self.gradfc(gradnorms)
 
         # For logits
         logits = data["logits"]
         x_lg = self.logits_fc(logits)
 
+        # Label embed
+        labels = data["labels"]
+        x_lb = self.label_embed(labels)
+
         # Combine them all
         loss = data["loss"]
 
-        x = ch.cat((x_acts, x_lg, loss), 1)
-        # x = ch.cat((x_acts, x_gn, x_lg, loss), 1)
+
+        if self.use_grad_norms:
+            x = ch.cat((x_acts, x_gn, x_lg, x_lb, loss), 1)
+        else:
+            x = ch.cat((x_acts, x_lg, x_lb, loss), 1)
 
         if self.feature_mode:
             return x
@@ -315,10 +346,11 @@ def train_meta_classifier(model, num_epochs: int,
                           get_best_val: bool = False,
                           device: str = "cuda",
                           pairwise: bool = False):
-    optimizer = ch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    # optimizer = ch.optim.SGD(model.parameters(), lr=5e-2, weight_decay=weight_decay, momentum=0.9)
+    # optimizer = ch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    optimizer = ch.optim.SGD(model.parameters(), lr=1e-2, weight_decay=0, momentum=0.9)
     # optimizer = ch.optim.SGD(model.parameters(), lr=1e-1, weight_decay=weight_decay, momentum=0.9)
     scheduler = None
+    scheduler = ch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.5)
     # scheduler = ch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
     model.to(device)
 
@@ -477,7 +509,9 @@ class FeaturesDataset(ch.utils.data.Dataset):
     Real feature generation happens in collation step to maximize parallelism in model calls
     """
     def __init__(self, model, x_data, y_data, y_member,
-                 batch_size: int, augment: bool = False):
+                 batch_size: int, augment: bool = False,
+                 cache: bool = False,
+                 use_grad_norms: bool = False):
         self.model = copy.deepcopy(model)
         self.model.eval()
         self.model.cuda()
@@ -486,6 +520,10 @@ class FeaturesDataset(ch.utils.data.Dataset):
         self.y_member = y_member
         self.batch_size = batch_size
         self.augment = augment
+        self.cache = cache
+        self.use_grad_norms = use_grad_norms
+        if self.cache:
+            self.cache_indicator = np.zeros(dtype=bool, shape=len(self))
 
     def __len__(self):
         return math.ceil(len(self.y_member) / self.batch_size)
@@ -506,20 +544,34 @@ class FeaturesDataset(ch.utils.data.Dataset):
                 )
 
     def __getitem__(self, idx):
-        idx_start = idx * self.batch_size
-        idx_end = idx_start + self.batch_size
+        if self.cache and not self.augment and self.cache_indicator[idx]:
+            # Load from cache
+            path = os.path.join(meta_run_cache(), f"{idx}.pt")
+            data = ch.load(path)
+            return data["features"], data["y"]
+        else:
+            idx_start = idx * self.batch_size
+            idx_end = idx_start + self.batch_size
 
-        with ch.no_grad():
-            x_ = self.x_data[idx_start: idx_end]
-            y_ = self.y_data[idx_start: idx_end]
+            with ch.no_grad():
+                x_ = self.x_data[idx_start: idx_end]
+                y_ = self.y_data[idx_start: idx_end]
 
-            # Apply transforms if requested
-            if self.augment:
-                tf = self.get_transform()
-                # Apply instance-wise transform
-                x_ = ch.stack([tf(z) for z in x_], 0)
+                # Apply transforms if requested
+                if self.augment:
+                    tf = self.get_transform()
+                    # Apply instance-wise transform
+                    x_ = ch.stack([tf(z) for z in x_], 0)
 
-        features = self.get_signals(x_, y_)
+            features = self.get_signals(x_, y_)
+
+            # If not augmentation-based, dump to cache
+            if self.cache and not self.augment:
+                # Dump file to cache
+                path = os.path.join(meta_run_cache(), f"{idx}.pt")
+                ch.save({"features": features, "y": self.y_member[idx_start: idx_end]}, path)
+                self.cache_indicator[idx] = True
+
         return features, self.y_member[idx_start: idx_end]
 
     def get_signals(self, x, y):
@@ -531,35 +583,60 @@ class FeaturesDataset(ch.utils.data.Dataset):
         self.model.zero_grad()
         y_hat = self.model(x_)
 
-        # """
-        losses = ch.nn.CrossEntropyLoss(reduction="none")(y_hat, y_).detach().cpu().unsqueeze(1)
-        # gradnorms = ch.zeros(len(y_), 108)
-        # """
+        if self.use_grad_norms:
+            # Faster version with vmap
 
-        """
-        # Might as well take note of logits
-        losses, gradnorms = [], []
-        # Compute element-wise loss and grad norm
-        for i in range(len(y_hat)):
             self.model.zero_grad()
-            loss = ch.nn.CrossEntropyLoss()(y_hat[i].unsqueeze(0), y_[i].unsqueeze(0))
-            loss.backward(retain_graph=True)
-            losses.append(loss.detach())
-            gnorms = []
-            for p in self.model.parameters():
-                if p.grad is not None:
-                    gnorms.append(ch.norm(p.grad.data.detach(), 2))
-            gnorms = ch.stack(gnorms).cpu()
-            gradnorms.append(gnorms)
-        losses = ch.stack(losses).cpu().unsqueeze(1)
-        gradnorms = ch.stack(gradnorms).cpu()
-        """
+            params = {k: v.detach() for k, v in self.model.named_parameters()}
+            buffers = {k: v.detach() for k, v in self.model.named_buffers()}
+
+            def compute_loss(params, buffers, sample, target):
+                batch = sample.unsqueeze(0).cuda()
+                targets = target.unsqueeze(0).cuda()
+                predictions = functional_call(self.model, (params, buffers), (batch,))
+                loss = ch.nn.CrossEntropyLoss()(predictions, targets)
+                return loss
+
+            ft_compute_grad = grad(compute_loss)
+            ft_compute_sample_grad = vmap(ft_compute_grad, in_dims=(None, None, 0, 0))
+            ft_per_sample_grads = ft_compute_sample_grad(params, buffers, x, y)
+
+            gradnorms = []
+            for k, v in ft_per_sample_grads.items():
+                v_flat = v.detach().reshape(v.shape[0], -1)
+                gradnorms.append(ch.norm(v_flat, 2, dim=1))
+            gradnorms = ch.stack(gradnorms, 1).cpu()
+            self.model.zero_grad()
+            losses = ch.nn.CrossEntropyLoss(reduction="none")(y_hat, y_).detach().cpu().unsqueeze(1)
+
+            """
+            # Might as well take note of logits
+            losses, gradnorms = [], []
+            # Compute element-wise loss and grad norm
+            for i in range(len(y_hat)):
+                self.model.zero_grad()
+                loss = ch.nn.CrossEntropyLoss()(y_hat[i].unsqueeze(0), y_[i].unsqueeze(0))
+                loss.backward(retain_graph=True)
+                losses.append(loss.detach())
+                gnorms = []
+                for p in self.model.parameters():
+                    if p.grad is not None:
+                        gnorms.append(ch.norm(p.grad.data.detach(), 2))
+                gnorms = ch.stack(gnorms).cpu()
+                gradnorms.append(gnorms)
+            losses = ch.stack(losses).cpu().unsqueeze(1)
+            gradnorms = ch.stack(gradnorms).cpu()
+            """
+        else:
+            losses = ch.nn.CrossEntropyLoss(reduction="none")(y_hat, y_).detach().cpu().unsqueeze(1)
 
         m = {
             "logits": y_hat.detach().cpu(),
             "loss": losses,
-            # "gradnorms": gradnorms,
+            "labels": y_.cpu(),
         }
+        if self.use_grad_norms:
+            m["gradnorms"] = gradnorms
         for i in range(len(acts)):
             m[f"activations_{i}"] = acts[i].detach().cpu()
 
@@ -602,7 +679,8 @@ def train_meta_clf(meta_clf, model, x_both, y,
                    val_points: int = 1000,
                    device: str = "cuda",
                    augment: bool = False,
-                   pairwise: bool = False):
+                   pairwise: bool = False,
+                   use_grad_norms: bool = False):
     x, y_data = x_both
 
     # Sample points for validation using train-test split
@@ -620,6 +698,9 @@ def train_meta_clf(meta_clf, model, x_both, y,
     y_train = np.repeat(y_train, n_reps)
     y_val = np.repeat(y_val, n_reps)
     """
+    # Cache is run-specific. Clear its contents for now
+    for f in os.listdir(meta_run_cache()):
+        os.remove(os.path.join(meta_run_cache(), f))
 
     if pairwise:
         collate_fn_use = dict_collate_fn_pairwise
@@ -634,6 +715,7 @@ def train_meta_clf(meta_clf, model, x_both, y,
         ch.from_numpy(y_train).float(),
         batch_size=batch_size,
         augment=augment,
+        use_grad_norms=use_grad_norms
     )
     if pairwise:
         ds_train = PairwiseFeaturesDataset(ds_train, n_task=20_000)
@@ -647,7 +729,8 @@ def train_meta_clf(meta_clf, model, x_both, y,
     ds_val = FeaturesDataset(
         model, x_val, y_data_val,
         ch.from_numpy(y_val).float(),
-        batch_size=batch_size)
+        batch_size=batch_size,
+        use_grad_norms=use_grad_norms)
     if pairwise:
         ds_val = PairwiseFeaturesDataset(ds_val, n_task=3_000)
     val_loader = ch.utils.data.DataLoader(ds_val, batch_size=4, shuffle=False,
@@ -657,7 +740,8 @@ def train_meta_clf(meta_clf, model, x_both, y,
                                           collate_fn=collate_fn_use)
 
     meta_clf_trained = train_meta_classifier(meta_clf, num_epochs, train_loader, val_loader,
-                                             get_best_val=True,
+                                             # get_best_val=True,
+                                             get_best_val=False,
                                              device=device,
                                              pairwise=pairwise)
 
@@ -669,3 +753,38 @@ def train_meta_clf(meta_clf, model, x_both, y,
     meta_clf_trained = wrapped_meta.model
     """
     return meta_clf_trained
+
+
+def test_meta(meta_clf, loader, gt_labels, args, META_DEVICE):
+
+    test_preds = []
+    collected_features = []
+    for batch in loader:
+        x, y = batch[0], batch[1]
+        x_ = {k: v.to(META_DEVICE) for k, v in x.items()}
+
+        if args.pairwise:
+            embed = meta_clf.get_feature_emb(x_).detach()
+            collected_features.append(embed)
+        else:
+            preds = ch.nn.functional.sigmoid(meta_clf(x_)).detach().cpu().numpy()
+            # preds = preds.mean(0)
+            test_preds.extend(preds)
+
+    if args.pairwise:
+        collected_features = ch.cat(collected_features, 0)
+        for i in range(len(collected_features)):
+            # Construct inputs (collected_features[i], collected_features[j]) for varying j
+            inputs = {"left": collected_features[i].unsqueeze(0).repeat(len(collected_features), 1), "right": collected_features}
+            outputs = ch.nn.functional.sigmoid(meta_clf(inputs, precomputed=True)).detach().cpu().numpy()
+            # Aggregate prediction as weighted sum of predicted output (which tells you whether same class or not) and corresponding ground-truth labels
+
+            # We essentially want P(y=1)
+            weighted_pred = np.zeros_like(outputs)
+            weighted_pred[gt_labels == 1] = outputs[gt_labels == 1]
+            weighted_pred[gt_labels == 0] = 1 - outputs[gt_labels == 0]
+            # Of course, skip ith point (like, do not count it in mean)
+            weighted_pred[i] = None
+            test_preds.append(np.nanmean(weighted_pred))
+
+    return test_preds
