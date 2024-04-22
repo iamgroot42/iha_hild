@@ -1,7 +1,6 @@
 import numpy as np
 import os
 from torch import nn
-import torchvision
 import numpy as np
 from tqdm import tqdm
 import torch as ch
@@ -51,10 +50,13 @@ def train_model(
     loss_multiplier: float = 1.0,
     pick_n: int = 1,
     pick_mode: str = "best",
+    use_scheduler: bool = True,
+    opt_momentum: float = 0.9,
+    get_final_model: bool = False
 ):
     model.train()
 
-    if pick_mode not in ["best", "last"]:
+    if pick_mode not in ["best", "last", "last_n"]:
         raise ValueError("pick_mode must be 'best' or 'last'")
 
     n_track = pick_n
@@ -66,9 +68,15 @@ def train_model(
     # Set the loss function and optimizer
     # optimizer = ch.optim.Adam(model.parameters(), lr=learning_rate)
     optimizer = ch.optim.SGD(
-        model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=0.9
+        model.parameters(),
+        lr=learning_rate,
+        weight_decay=weight_decay,
+        momentum=opt_momentum,
     )
-    scheduler = ch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    if use_scheduler:
+        scheduler = ch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    else:
+        scheduler = None
 
     # Loop over each epoch
     iterator = range(epochs)
@@ -134,17 +142,23 @@ def train_model(
             test_acc, test_loss = evaluate_model(
                 model, test_loader, criterion, device=device
             )
-            if len(model_ckpts) < n_track:
-                model_ckpts.append(copy.deepcopy(model).cpu())
-                model_losses.append(test_loss)
-                model_accs.append(test_acc)
-            else:
-                if test_loss < max(model_losses):
-                    # Kick out the model with the highest loss
-                    idx = np.argmax(model_losses)
-                    model_ckpts[idx] = copy.deepcopy(model).cpu()
-                    model_losses[idx] = test_loss
-                    model_accs[idx] = test_acc
+            if pick_mode == "last_n":
+                if epoch_idx >= epochs - pick_n:
+                    model_ckpts.append(copy.deepcopy(model).cpu())
+                    model_losses.append(test_loss)
+                    model_accs.append(test_acc)
+            elif not get_final_model:
+                if len(model_ckpts) < n_track:
+                    model_ckpts.append(copy.deepcopy(model).cpu())
+                    model_losses.append(test_loss)
+                    model_accs.append(test_acc)
+                else:
+                    if test_loss < max(model_losses):
+                        # Kick out the model with the highest loss
+                        idx = np.argmax(model_losses)
+                        model_ckpts[idx] = copy.deepcopy(model).cpu()
+                        model_losses[idx] = test_loss
+                        model_accs[idx] = test_acc
 
         if verbose:
             iterator.set_description(
@@ -152,17 +166,24 @@ def train_model(
             )
 
         # Scheduler step
-        scheduler.step()
+        if scheduler:
+            scheduler.step()
 
     if test_loader:
-        print("Best test accuracy: ", max(model_accs))
-    
-    if pick_mode == "last":
+        if get_final_model:
+            print("Test accuracy: ", test_acc)
+        else:    
+            print("Best test accuracy: ", max(model_accs))
+
+    if not get_final_model and pick_mode == "last":
         # Of all models selected, pick the n_pick worst models
         idxs = np.argsort(model_losses)[::-1][:pick_n]
         model_ckpts = [model_ckpts[i] for i in idxs]
         model_losses = [model_losses[i] for i in idxs]
         model_accs = [model_accs[i] for i in idxs]
+
+    if get_final_model:
+        return model, test_acc, test_loss
 
     # < 1 epoch training, likely for FT attack
     if len(model_ckpts) == 0:
@@ -176,13 +197,14 @@ def train_model(
 
 
 @ch.no_grad()
-def evaluate_model(model, test_loader, criterion, device="cuda"):
+def evaluate_model(model, loader, criterion, device="cuda"):
     # Validate the performance of the model
     model.eval()
     # Assigning variables for computing loss and accuracy
     loss, acc = 0, 0
+    num_points = 0
 
-    for data, target in test_loader:
+    for data, target in loader:
         # Moving data and target to the device
         data, target = data.to(device, non_blocking=True), target.to(
             device, non_blocking=True
@@ -192,17 +214,19 @@ def evaluate_model(model, test_loader, criterion, device="cuda"):
 
         # Computing output and loss
         output = model(data)
-        loss += criterion(output, target).item()
+        loss += criterion(output, target).item() * len(target)
 
         # Computing accuracy
         pred = output.data.max(1, keepdim=True)[1]
         acc += pred.eq(target.data.view_as(pred)).sum()
 
+        num_points += len(target)
+
     # Averaging the losses
-    loss /= len(test_loader)
+    loss /= num_points
 
     # Calculating accuracy
-    acc = float(acc) / len(test_loader.dataset)
+    acc = float(acc) / len(loader.dataset)
 
     return acc, loss
 
@@ -347,7 +371,7 @@ if __name__ == "__main__":
     args.add_argument("--num_models", type=int, default=128, help="Total number of models (data splits will be created accordingly)")
     args.add_argument("--num_train", type=int, default=128, help="Number of models to train (out of num_models)")
     args.add_argument("--pick_n", type=int, default=1, help="Of all checkpoints, keep n.")
-    args.add_argument("--pick_mode", type=str, default="best", help="Criteria for picking N checkpoints.")
+    args.add_argument("--pick_mode", type=str, default="last", help="Criteria for picking N checkpoints.")
     args.add_argument(
         "--init_ref",
         type=int,

@@ -37,10 +37,27 @@ MODEL_MAPPING = {
         "hparams": {"batch_size": 256, "learning_rate": 0.1, "epochs": 100},
     },
     "mlp4": {
-        "model": (MLP, ([512, 256, 128, 64], )),
+        "model": (MLP, ([512, 256, 128, 64],)),
         "criterion": nn.CrossEntropyLoss(),
-        "hparams": {"batch_size": 256, "learning_rate": 0.1, "epochs": 50},
-    }
+        # "hparams": {"batch_size": 256, "learning_rate": 0.1, "epochs": 100},
+        # "hparams": {"batch_size": 256, "learning_rate": 0.05, "epochs": 100},
+        "hparams": {"batch_size": 256, "learning_rate": 0.05, "epochs": 120},
+    },
+    "mlp3": {
+        "model": (MLP, ([128, 64, 32],)),
+        "criterion": nn.CrossEntropyLoss(),
+        "hparams": {"batch_size": 256, "learning_rate": 0.05, "epochs": 120},
+    },
+    "mlp3_small": {
+        "model": (MLP, ([32, 32, 8],)),
+        "criterion": nn.CrossEntropyLoss(),
+        "hparams": {"batch_size": 256, "learning_rate": 0.02, "epochs": 120},
+    },
+    # "mlp4_slow": {
+    #     "model": (MLP, ([512, 256, 128, 64], )),
+    #     "criterion": nn.CrossEntropyLoss(),
+    #     "hparams": {"batch_size": 256, "learning_rate": 0.01, "epochs": 50},
+    # }
     # "efficientnet_v2_s": {
     #     "model": (efficientnet_v2_s, ()),
     #     "criterion": nn.CrossEntropyLoss(),

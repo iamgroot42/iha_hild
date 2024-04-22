@@ -22,6 +22,7 @@ from torch.func import functional_call, vmap, grad
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 
+
 mpl.rcParams["figure.dpi"] = 300
 
 
@@ -170,10 +171,23 @@ class MetaModePlain(nn.Module):
 
 
 class MetaModelCNN(nn.Module):
-    def __init__(self, hidden_dim: int = 4, num_classes_data: int = 10, feature_mode: bool = False, use_grad_norms: bool = False):
+    def __init__(self, hidden_dim: int = 4,
+                 num_classes_data: int = 10,
+                 feature_mode: bool = False,
+                 use_grad_norms: bool = False,
+                 use_ft_signals: bool = False):
+        """
+        Args:
+            hidden_dim: Dimension of hidden layers
+            num_classes_data: Number of classes in the data of underlying classifier
+            feature_mode: If True, return features directly
+            use_grad_norms: If True, use gradient norms as features (provided)
+            use_ft_loss: If True, use loss from fine-tuned model as feature (provided)
+        """
         super().__init__()
         self.feature_mode = feature_mode
         self.use_grad_norms = use_grad_norms
+        self.use_ft_signals = use_ft_signals
         # For activation
         self.acts_0 = nn.Sequential(
             nn.Conv2d(16, 6, 5),
@@ -241,13 +255,14 @@ class MetaModelCNN(nn.Module):
             self.gradfc = nn.Sequential(nn.Linear(108, 32), nn.BatchNorm1d(32), nn.ReLU(inplace=True), nn.Linear(32, hidden_dim), nn.ReLU(inplace=True))
 
         # For logits
-        self.logits_fc = nn.Sequential(nn.Linear(num_classes_data, hidden_dim), nn.ReLU(inplace=True))
+        # If ft-based signals available, before/after logits will be concatenated
+        self.logits_fc = nn.Sequential(nn.Linear(num_classes_data * (1 + self.use_ft_signals), hidden_dim), nn.ReLU(inplace=True))
 
         # Embedding layer for data labels
         self.label_embed = nn.Embedding(num_classes_data, hidden_dim)
 
         # Final connector
-        self.latent_dim = hidden_dim * (4 if self.use_grad_norms else 3) + 1
+        self.latent_dim = hidden_dim * (4 if self.use_grad_norms else 3) + 1 + self.use_ft_signals
         if not self.feature_mode:
             self.fc = nn.Sequential(
                 nn.Linear(self.latent_dim, hidden_dim),
@@ -292,6 +307,9 @@ class MetaModelCNN(nn.Module):
 
         # For logits
         logits = data["logits"]
+        if self.use_ft_signals:
+            logits_ft = data["ft_logits"]
+            logits = ch.cat((logits, logits_ft), 1)
         x_lg = self.logits_fc(logits)
 
         # Label embed
@@ -300,7 +318,9 @@ class MetaModelCNN(nn.Module):
 
         # Combine them all
         loss = data["loss"]
-
+        if self.use_ft_signals:
+            ft_loss = data["ft_loss"]
+            loss = ch.cat((loss, ft_loss), 1)
 
         if self.use_grad_norms:
             x = ch.cat((x_acts, x_gn, x_lg, x_lb, loss), 1)
@@ -350,8 +370,30 @@ def train_meta_classifier(model, num_epochs: int,
     optimizer = ch.optim.SGD(model.parameters(), lr=1e-2, weight_decay=0, momentum=0.9)
     # optimizer = ch.optim.SGD(model.parameters(), lr=1e-1, weight_decay=weight_decay, momentum=0.9)
     scheduler = None
-    scheduler = ch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.5)
+    # scheduler = ch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
+
+    def step_with_warmup(e: int):
+        initial_lr = 1e-3
+        normal_start_lr = 1e-1
+        warmup_steps = 10
+        if e < warmup_steps:
+            return initial_lr + (normal_start_lr - initial_lr) * (e / warmup_steps)
+        else:
+            # 10 - 30 : 1e-1
+            # 30 - 50 : 1e-2
+            # 50 - 80 : 1e-3
+            # 80 - 100 : 1e-4
+            if e < 30:
+                return initial_lr
+            elif e < 50:
+                return initial_lr * 0.1
+            elif e < 80:
+                return initial_lr * 0.01
+            else:
+                return initial_lr * 0.001
+
     # scheduler = ch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
+    # scheduler = ch.optim.lr_scheduler.LambdaLR(optimizer, step_with_warmup)
     model.to(device)
 
     def get_loss_and_acc(y_hat, y):
@@ -407,7 +449,7 @@ def train_meta_classifier(model, num_epochs: int,
             scheduler.step()
 
         if val_loader is not None:
-            with ch.no_grad():
+            with ch.set_grad_enabled(True):
                 model.eval()
                 vloss = 0
                 for batch in val_loader:
@@ -511,7 +553,8 @@ class FeaturesDataset(ch.utils.data.Dataset):
     def __init__(self, model, x_data, y_data, y_member,
                  batch_size: int, augment: bool = False,
                  cache: bool = False,
-                 use_grad_norms: bool = False):
+                 use_grad_norms: bool = False,
+                 use_ft_signals: bool = False):
         self.model = copy.deepcopy(model)
         self.model.eval()
         self.model.cuda()
@@ -522,6 +565,7 @@ class FeaturesDataset(ch.utils.data.Dataset):
         self.augment = augment
         self.cache = cache
         self.use_grad_norms = use_grad_norms
+        self.use_ft_signals = use_ft_signals
         if self.cache:
             self.cache_indicator = np.zeros(dtype=bool, shape=len(self))
 
@@ -585,7 +629,6 @@ class FeaturesDataset(ch.utils.data.Dataset):
 
         if self.use_grad_norms:
             # Faster version with vmap
-
             self.model.zero_grad()
             params = {k: v.detach() for k, v in self.model.named_parameters()}
             buffers = {k: v.detach() for k, v in self.model.named_buffers()}
@@ -630,15 +673,39 @@ class FeaturesDataset(ch.utils.data.Dataset):
         else:
             losses = ch.nn.CrossEntropyLoss(reduction="none")(y_hat, y_).detach().cpu().unsqueeze(1)
 
+        if self.use_ft_signals:
+            # FT model with one step of GD with 1e-3 LR
+            ft_loss, ft_logits = [], []
+            for i in range(len(y_)):
+                x_i = x_[i].unsqueeze(0)
+                model_ = copy.deepcopy(self.model)
+                model_.cuda()
+                optimizer = ch.optim.SGD(model_.parameters(), lr=1e-3)
+                optimizer.zero_grad()
+                y_lab = y_[i].unsqueeze(0)
+                loss = ch.nn.CrossEntropyLoss()(model_(x_i), y_lab)
+                loss.backward()
+                optimizer.step()
+                # Get signals (for now logits and loss)
+                y_hat_ = model_(x_i)
+                ft_logits.append(y_hat_.detach().cpu())
+                ft_loss.append(ch.nn.CrossEntropyLoss(reduction="none")(y_hat_, y_lab).detach().cpu().unsqueeze(1))
+            ft_loss = ch.cat(ft_loss, 0).cpu()
+            ft_logits = ch.cat(ft_logits, 0).cpu()
+
         m = {
             "logits": y_hat.detach().cpu(),
             "loss": losses,
             "labels": y_.cpu(),
         }
-        if self.use_grad_norms:
-            m["gradnorms"] = gradnorms
         for i in range(len(acts)):
             m[f"activations_{i}"] = acts[i].detach().cpu()
+
+        if self.use_grad_norms:
+            m["gradnorms"] = gradnorms
+        if self.use_ft_signals:
+            m["ft_loss"] = ft_loss
+            m["ft_logits"] = ft_logits
 
         return m
 
@@ -680,7 +747,8 @@ def train_meta_clf(meta_clf, model, x_both, y,
                    device: str = "cuda",
                    augment: bool = False,
                    pairwise: bool = False,
-                   use_grad_norms: bool = False):
+                   use_grad_norms: bool = False,
+                   use_ft_signals: bool = False):
     x, y_data = x_both
 
     # Sample points for validation using train-test split
@@ -715,13 +783,14 @@ def train_meta_clf(meta_clf, model, x_both, y,
         ch.from_numpy(y_train).float(),
         batch_size=batch_size,
         augment=augment,
-        use_grad_norms=use_grad_norms
+        use_grad_norms=use_grad_norms,
+        use_ft_signals=use_ft_signals
     )
     if pairwise:
         ds_train = PairwiseFeaturesDataset(ds_train, n_task=20_000)
     train_loader = ch.utils.data.DataLoader(ds_train, batch_size=4, shuffle=True,
-                                            num_workers=4,
-                                            prefetch_factor=4,
+                                            num_workers=0,
+                                            prefetch_factor=None,
                                             pin_memory=True,
                                             collate_fn=collate_fn_use)
 
@@ -730,17 +799,18 @@ def train_meta_clf(meta_clf, model, x_both, y,
         model, x_val, y_data_val,
         ch.from_numpy(y_val).float(),
         batch_size=batch_size,
-        use_grad_norms=use_grad_norms)
+        use_grad_norms=use_grad_norms,
+        use_ft_signals=use_ft_signals)
     if pairwise:
         ds_val = PairwiseFeaturesDataset(ds_val, n_task=3_000)
     val_loader = ch.utils.data.DataLoader(ds_val, batch_size=4, shuffle=False,
-                                          num_workers=4,
-                                          prefetch_factor=4,
+                                          num_workers=0,
+                                          prefetch_factor=None,
                                           pin_memory=True,
                                           collate_fn=collate_fn_use)
 
     meta_clf_trained = train_meta_classifier(meta_clf, num_epochs, train_loader, val_loader,
-                                             # get_best_val=True,
+                                            #  get_best_val=True,
                                              get_best_val=False,
                                              device=device,
                                              pairwise=pairwise)

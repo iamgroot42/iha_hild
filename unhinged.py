@@ -119,14 +119,16 @@ def main(args):
             num_classes_data=ds.num_classes,
             feature_mode=args.pairwise,
             hidden_dim=args.meta_dim,
-            use_grad_norms=args.use_grad_norms
+            use_grad_norms=args.use_grad_norms,
+            use_ft_signals=args.use_ft_signals,
         )
     else:
         meta_clf = MetaModelCNN(
             num_classes_data=ds.num_classes,
             feature_mode=args.pairwise,
             hidden_dim=args.meta_dim,
-            use_grad_norms=args.use_grad_norms
+            use_grad_norms=args.use_grad_norms,
+            use_ft_signals=args.use_ft_signals,
         )
 
     if args.pairwise:
@@ -140,12 +142,13 @@ def main(args):
         (x_data_train, y_data_train),
         signals_train_y,
         batch_size=batch_size,
-        val_points=100,  # 250,
+        val_points=150,  # 250,
         num_epochs=args.epochs,
         device=META_DEVICE,
         augment=args.augment,
         pairwise=args.pairwise,
         use_grad_norms=args.use_grad_norms,
+        use_ft_signals=args.use_ft_signals,
     )
     meta_clf.eval()
 
@@ -173,7 +176,9 @@ def main(args):
     all_preds = []
     for x_data_test in tqdm(x_test_all):
         ds_test = FeaturesDataset(target_model, x_data_test, y_data_test, ch.from_numpy(signals_test_y).float(),
-                                  batch_size=16, use_grad_norms=args.use_grad_norms)
+                                  batch_size=16,
+                                  use_grad_norms=args.use_grad_norms,
+                                  use_ft_signals=args.use_ft_signals)
         test_loader = ch.utils.data.DataLoader(ds_test, batch_size=4, shuffle=False, collate_fn=dict_collate_fn)
 
         # Test meta-classifier
@@ -216,6 +221,7 @@ if __name__ == "__main__":
     args.add_argument("--augment", action="store_true", help="Augment training data?")
     args.add_argument("--pairwise", action="store_true", help="Pairwise meta-classifier?")
     args.add_argument("--use_grad_norms", action="store_true", help="Use gradient norms?")
+    args.add_argument("--use_ft_signals", action="store_true", help="Perform FT step?")
     args.add_argument("--exp_seed", type=int, default=2024)
     args.add_argument("--epochs", type=int, default=50)
     args.add_argument("--meta_dim", type=int, default=4)
