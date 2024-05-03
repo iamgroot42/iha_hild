@@ -16,8 +16,9 @@ from mib.dataset.utils import get_dataset
 
 def get_loader(dataset, indices, batch_size: int, start_seed: int = 42, shuffle: bool = True):
     num_workers = 2
+    subset_ds = ch.utils.data.Subset(dataset, indices)
     loader = ch.utils.data.DataLoader(
-        ch.utils.data.Subset(dataset, indices),
+        subset_ds,
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
@@ -132,7 +133,7 @@ def train_model(
             # Computing accuracy
             with ch.no_grad():
                 if binary_case:
-                    pred = output.data.squeeze() > 0.5
+                    pred = output.data.squeeze() > 0 if type(criterion) == nn.BCEWithLogitsLoss else output.data.squeeze() > 0.5
                     train_acc += pred.eq(target.data.view_as(pred)).sum()
                 else:
                     pred = output.data.max(1, keepdim=True)[1]
@@ -164,6 +165,7 @@ def train_model(
             iterator.set_description(
                 f"Epoch: {epoch_idx+1}/{epochs} | Train Loss: {train_loss/len(train_loader):.4f} | Train Accuracy: {100 * train_acc / samples_seen:.2f} | Test Loss: {test_loss:.4f} | Test Accuracy: {100 * test_acc:.2f}"
             )
+            # print(train_loss / len(train_loader), test_loss)
 
         # Scheduler step
         if scheduler:
@@ -209,16 +211,25 @@ def evaluate_model(model, loader, criterion, device="cuda"):
         data, target = data.to(device, non_blocking=True), target.to(
             device, non_blocking=True
         )
-        # Cast target to long tensor
-        target = target.long()
 
+        binary_case = False
         # Computing output and loss
         output = model(data)
-        loss += criterion(output, target).item() * len(target)
+        if output.shape[1] == 1:
+            # BCE loss case
+            binary_case = True
+            loss += criterion(output.squeeze(), target.float()).cpu().item() * len(target)
+        else:
+            # CE loss case
+            loss += criterion(output, target.long()).cpu().item() * len(target)
 
         # Computing accuracy
-        pred = output.data.max(1, keepdim=True)[1]
-        acc += pred.eq(target.data.view_as(pred)).sum()
+        if binary_case:
+            pred = output.data.squeeze() > 0 if type(criterion) == nn.BCEWithLogitsLoss else output.data.squeeze() > 0.5
+            acc += pred.eq(target.data.view_as(pred)).sum()
+        else:
+            pred = output.data.max(1, keepdim=True)[1]
+            acc += pred.eq(target.data.view_as(pred)).sum()
 
         num_points += len(target)
 

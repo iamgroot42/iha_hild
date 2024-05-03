@@ -142,13 +142,14 @@ def main(args):
         (x_data_train, y_data_train),
         signals_train_y,
         batch_size=batch_size,
-        val_points=150,  # 250,
+        val_points=250,  # 250,
         num_epochs=args.epochs,
         device=META_DEVICE,
         augment=args.augment,
         pairwise=args.pairwise,
         use_grad_norms=args.use_grad_norms,
         use_ft_signals=args.use_ft_signals,
+        use_best=args.use_best,
     )
     meta_clf.eval()
 
@@ -222,6 +223,7 @@ if __name__ == "__main__":
     args.add_argument("--pairwise", action="store_true", help="Pairwise meta-classifier?")
     args.add_argument("--use_grad_norms", action="store_true", help="Use gradient norms?")
     args.add_argument("--use_ft_signals", action="store_true", help="Perform FT step?")
+    args.add_argument("--use_best", action="store_true", help="Pick meta-clf with best validation loss")
     args.add_argument("--exp_seed", type=int, default=2024)
     args.add_argument("--epochs", type=int, default=50)
     args.add_argument("--meta_dim", type=int, default=4)

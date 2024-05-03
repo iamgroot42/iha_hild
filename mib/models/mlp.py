@@ -9,16 +9,19 @@ from typing import List
 
 
 class MLP(nn.Module):
-    def __init__(self, layer_depths: List[int], num_classes: int):
+    def __init__(self, num_features:int, layer_depths: List[int], num_classes: int, add_sigmoid: bool = False):
         super().__init__()
         self.layer_depths = layer_depths
+        if add_sigmoid and num_classes != 1:
+            raise ValueError(f"Only working with single-class classification. Are you sure you want to add a sigmoid for {num_classes} classes?")
 
-        num_features = 600
         self.layers = [nn.Linear(num_features, layer_depths[0]), nn.ReLU()]
         for i in range(1, len(layer_depths)):
             self.layers.append(nn.Linear(layer_depths[i-1], layer_depths[i]))
             self.layers.append(nn.ReLU())
         self.layers.append(nn.Linear(layer_depths[-1], num_classes))
+        if add_sigmoid:
+            self.layers.append(nn.Sigmoid())
         self.layers = nn.ModuleList(self.layers)
 
     def forward(self, x, get_all: bool = False, layer_readout: int = None):
@@ -36,3 +39,8 @@ class MLP(nn.Module):
             return all_embeds
 
         return out
+
+
+class MLPQuadLoss(MLP):
+    def __init__(self, num_features:int, layer_depths: List[int], num_classes: int):
+        super().__init__(num_features, layer_depths, num_classes, add_sigmoid=True)

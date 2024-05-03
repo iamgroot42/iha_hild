@@ -50,41 +50,51 @@ class MetaModePlain(nn.Module):
     def __init__(
         self,
         hidden_dim: int = 4,
-        num_classes_data: int = 10,
+        num_classes_data: int = 100,
         feature_mode: bool = False,
-        use_grad_norms: bool = False):
+        use_grad_norms: bool = False,
+        use_ft_signals: bool = False):
         super().__init__()
         self.feature_mode = feature_mode
         self.use_grad_norms = use_grad_norms
+        self.use_ft_signals = use_ft_signals
 
         # For activation
         self.acts_0 = nn.Sequential(
-            nn.Linear(512, 64),
+            nn.Linear(512, hidden_dim),
             nn.ReLU(inplace=True),
-            nn.BatchNorm1d(64),
-            nn.Linear(64, hidden_dim),
-            nn.ReLU(inplace=True),
+            #nn.Linear(512, 64),
+            #nn.ReLU(inplace=True),
+            #nn.BatchNorm1d(64),
+            #nn.Linear(64, hidden_dim),
+            #nn.ReLU(inplace=True),
         )
         self.acts_1 = nn.Sequential(
-            nn.Linear(256, 64),
+            nn.Linear(256, hidden_dim),
             nn.ReLU(inplace=True),
-            nn.BatchNorm1d(64),
-            nn.Linear(64, hidden_dim),
-            nn.ReLU(inplace=True),
+            #nn.Linear(256, 64),
+            #nn.ReLU(inplace=True),
+            #nn.BatchNorm1d(64),
+            #nn.Linear(64, hidden_dim),
+            #nn.ReLU(inplace=True),
         )
         self.acts_2 = nn.Sequential(
-            nn.Linear(128, 32),
+            nn.Linear(128, hidden_dim),
             nn.ReLU(inplace=True),
-            nn.BatchNorm1d(32),
-            nn.Linear(32, hidden_dim),
-            nn.ReLU(inplace=True),
+            #nn.Linear(128, 32),
+            #nn.ReLU(inplace=True),
+            #nn.BatchNorm1d(32),
+            #nn.Linear(32, hidden_dim),
+            #nn.ReLU(inplace=True),
         )
         self.acts_3 = nn.Sequential(
-            nn.Linear(64, 16),
+            nn.Linear(64, hidden_dim),
             nn.ReLU(inplace=True),
-            nn.BatchNorm1d(16),
-            nn.Linear(16, hidden_dim),
-            nn.ReLU(inplace=True),
+            #nn.Linear(64, 16),
+            #nn.ReLU(inplace=True),
+            #nn.BatchNorm1d(16),
+            #nn.Linear(16, hidden_dim),
+            #nn.ReLU(inplace=True),
         )
         num_acts_use = 4
         self.acts_all = nn.Sequential(
@@ -100,15 +110,17 @@ class MetaModePlain(nn.Module):
             self.gradfc = nn.Sequential(nn.Linear(10, hidden_dim), nn.ReLU(inplace=True))
 
         # For logits
+        # If ft-based signals available, before/after logits will be concatenated
         self.logits_fc = nn.Sequential(
-            nn.Linear(num_classes_data, hidden_dim), nn.ReLU(inplace=True)
+            nn.Linear(num_classes_data * (1 + self.use_ft_signals), hidden_dim),
+            nn.ReLU(inplace=True),
         )
 
         # Embedding layer for data labels
         self.label_embed = nn.Embedding(num_classes_data, hidden_dim)
 
         # Final connector
-        self.latent_dim = hidden_dim * (4 if self.use_grad_norms else 3) + 1
+        self.latent_dim = hidden_dim * (4 if self.use_grad_norms else 3) + 1 + self.use_ft_signals
         if not self.feature_mode:
             self.fc = nn.Sequential(
                 nn.Linear(self.latent_dim, hidden_dim),
@@ -149,6 +161,9 @@ class MetaModePlain(nn.Module):
 
         # For logits
         logits = data["logits"]
+        if self.use_ft_signals:
+            logits_ft = data["ft_logits"]
+            logits = ch.cat((logits, logits_ft), 1)
         x_lg = self.logits_fc(logits)
 
         # Label embed
@@ -157,6 +172,9 @@ class MetaModePlain(nn.Module):
 
         # Combine them all
         loss = data["loss"]
+        if self.use_ft_signals:
+            ft_loss = data["ft_loss"]
+            loss = ch.cat((loss, ft_loss), 1)
 
         if self.use_grad_norms:
             x = ch.cat((x_acts, x_gn, x_lg, x_lb, loss), 1)
@@ -748,7 +766,8 @@ def train_meta_clf(meta_clf, model, x_both, y,
                    augment: bool = False,
                    pairwise: bool = False,
                    use_grad_norms: bool = False,
-                   use_ft_signals: bool = False):
+                   use_ft_signals: bool = False,
+                   use_best: bool = False):
     x, y_data = x_both
 
     # Sample points for validation using train-test split
@@ -810,8 +829,7 @@ def train_meta_clf(meta_clf, model, x_both, y,
                                           collate_fn=collate_fn_use)
 
     meta_clf_trained = train_meta_classifier(meta_clf, num_epochs, train_loader, val_loader,
-                                            #  get_best_val=True,
-                                             get_best_val=False,
+                                             get_best_val=use_best,
                                              device=device,
                                              pairwise=pairwise)
 

@@ -1,7 +1,7 @@
 from mib.models.wide_resnet import Wide_ResNet
 from mib.models.nasnet import NasNetA
 from mib.models.shufflenetv2 import ShuffleNetV2
-from mib.models.mlp import MLP
+from mib.models.mlp import MLP, MLPQuadLoss
 from torch import nn
 
 
@@ -37,21 +37,66 @@ MODEL_MAPPING = {
         "hparams": {"batch_size": 256, "learning_rate": 0.1, "epochs": 100},
     },
     "mlp4": {
-        "model": (MLP, ([512, 256, 128, 64],)),
+        "model": (
+            MLP,
+            (
+                600,
+                [512, 256, 128, 64],
+            ),
+        ),
         "criterion": nn.CrossEntropyLoss(),
         # "hparams": {"batch_size": 256, "learning_rate": 0.1, "epochs": 100},
         # "hparams": {"batch_size": 256, "learning_rate": 0.05, "epochs": 100},
         "hparams": {"batch_size": 256, "learning_rate": 0.05, "epochs": 120},
     },
     "mlp3": {
-        "model": (MLP, ([128, 64, 32],)),
+        "model": (
+            MLP,
+            (
+                600,
+                [128, 64, 32],
+            ),
+        ),
         "criterion": nn.CrossEntropyLoss(),
         "hparams": {"batch_size": 256, "learning_rate": 0.05, "epochs": 120},
     },
     "mlp3_small": {
-        "model": (MLP, ([32, 32, 8],)),
+        "model": (
+            MLP,
+            (
+                600,
+                [32, 32, 8],
+            ),
+        ),
         "criterion": nn.CrossEntropyLoss(),
         "hparams": {"batch_size": 256, "learning_rate": 0.02, "epochs": 120},
+    },
+    "mlp_mnist17": {
+        "model": (
+            MLP,
+            (
+                784,
+                [4],
+            ),
+        ),
+        "criterion": nn.BCEWithLogitsLoss(),
+        "hparams": {"batch_size": 128, "learning_rate": 0.001, "epochs": 100},
+    },
+    "mlp_mnistodd": {
+        "model": (
+            MLP,
+            (
+                784,
+                [8],
+            ),
+        ),
+        "criterion": nn.BCEWithLogitsLoss(),
+        "hparams": {"batch_size": 128, "learning_rate": 0.01, "epochs": 100},
+    },
+    "mlp_mnistodd_mse": {
+        "model": (MLPQuadLoss, (784, [8])),
+        "criterion": nn.MSELoss(),
+        "hparams": {"batch_size": 128, "learning_rate": 0.01, "epochs": 100},
     },
     # "mlp4_slow": {
     #     "model": (MLP, ([512, 256, 128, 64], )),

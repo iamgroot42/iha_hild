@@ -30,7 +30,7 @@ def member_nonmember_loaders(
     args,
     num_nontrain_pool: int = None,
     batch_size: int = 1,
-    want_all_member_nonmember: bool = False,
+    want_all_member_nonmember: bool = False
 ):
     other_indices_train = np.array(
         [i for i in range(len(train_data)) if i not in train_idx]
@@ -128,13 +128,17 @@ def main(args):
     ds = get_dataset(args.dataset)(augment=False)
 
     # Load target model
-    target_model, _, _ = get_model(args.model_arch, ds.num_classes)
+    target_model, _, hparams = get_model(args.model_arch, ds.num_classes)
     model_dict = ch.load(os.path.join(model_dir, f"{args.target_model_index}.pt"))
     target_model.load_state_dict(model_dict["model"], strict=False)
     target_model.eval()
 
     # Pick records (out of all train) to test
     train_index = model_dict["train_index"]
+
+    # Get some information about model
+    learning_rate = hparams['learning_rate']
+    num_samples = len(train_index)
 
     # CIFAR
     num_nontrain_pool = 10000
@@ -154,6 +158,12 @@ def main(args):
         args.num_points,
         args,
         num_nontrain_pool,
+    )
+
+    # Temporary (for Hessian-related attack)
+    member_dset = ch.utils.data.Subset(train_data, train_index)
+    entire_train_data_loader = ch.utils.data.DataLoader(
+        member_dset, batch_size=8192 * 2, shuffle=False
     )
 
     # For reference-based attacks, train out models
@@ -251,6 +261,9 @@ def main(args):
             other_data_source=nonmember_dset_ft,
             out_traces=out_traces_use,
             x_aug=x_aug,
+            out_loader=entire_train_data_loader,
+            learning_rate=learning_rate,
+            num_samples=num_samples,
         )
         signals_in.append(score)
 
@@ -284,6 +297,9 @@ def main(args):
             other_data_source=nonmember_dset_ft,
             out_traces=out_traces_use,
             x_aug=x_aug,
+            out_loader=entire_train_data_loader,
+            learning_rate=learning_rate,
+            num_samples=num_samples,
         )
         signals_out.append(score)
 
@@ -307,7 +323,7 @@ def main(args):
         suffix = f"_{args.suffix}"
     if args.aug:
         attack_name += "_aug"
-    
+
     # Print out ROC
     total_labels = [0] * len(signals_out) + [1] * len(signals_in)
     total_preds = np.concatenate((signals_out, signals_in))

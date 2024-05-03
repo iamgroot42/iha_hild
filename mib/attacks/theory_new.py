@@ -21,6 +21,20 @@ class ProperTheoryRef(Attack):
     def __init__(self, model):
         super().__init__("ProperTheoryRef", model, reference_based=False, requires_trace=False, whitebox=True)
 
+    def collect_grad_on_all_data(self, loader):
+        # Collect gradient of model on all data
+        self.model.zero_grad()
+        for x, y in loader:
+            x, y = x.cuda(), y.cuda()
+            loss = self.criterion(self.model(x), y).mean()
+            loss.backward()
+        flat_grad = []
+        for p in self.model.parameters():
+            flat_grad.append(p.grad.detach().view(-1))
+        flat_grad = ch.cat(flat_grad) / len(loader.dataset)
+        self.model.zero_grad()
+        return flat_grad
+
     def compute_scores(self, x, y, **kwargs) -> np.ndarray:
         x, y = x.cuda(), y.cuda()
         out_loader = kwargs.get("out_loader", None)
@@ -49,15 +63,25 @@ class ProperTheoryRef(Attack):
         self.model.zero_grad()
 
         criterion = ch.nn.CrossEntropyLoss()
-        hvp = fast_hvp(self.model, flat_grad, out_loader, criterion, device="cuda")
-        I2 = ch.norm(hvp, p=2).cpu().item() / (learning_rate * num_samples)
+        ihvp = fast_ihvp(self.model, flat_grad, out_loader, criterion, device="cuda")
+
+        # Return self-influence scores
+        sif = ch.dot(flat_grad, ihvp).item()
+        return sif
+
+        # all_data_grad = self.collect_grad_on_all_data(out_loader)
+        # hvp_alldata = fast_ihvp(self.model, all_data_grad, out_loader, criterion, device="cuda")
+        # I3 = ch.dot(hvp_alldata, ihvp).cpu().item() * 2 / learning_rate
+
+        I2 = ch.norm(ihvp, p=2).cpu().item() / (learning_rate * num_samples)
         self.model.zero_grad()
 
         mi_score = I1 + I2
+        # mi_score = I1 - (I2 + I3)
         return mi_score
 
 
-def fast_hvp(model, vec, loader, criterion, device: str = "cpu"):
+def fast_ihvp(model, vec, loader, criterion, device: str = "cpu"):
     """
         Use LiSSA to compute HVP for a given model and dataloader
     """
@@ -76,7 +100,6 @@ def fast_hvp(model, vec, loader, criterion, device: str = "cpu"):
                 model(batch[0]), batch[1]
             )  # no regularization in test loss
 
-    """
     module = LiSSAInfluenceModule(
         model=model,
         objective=MyObjective(),
@@ -84,17 +107,15 @@ def fast_hvp(model, vec, loader, criterion, device: str = "cpu"):
         test_loader=None,
         device=device,
         damp=0,
-        repeat=5,
-        depth=5000, #5000 for MLP and Transformer, 10000 for CNN
-        # repeat=5,
-        # depth=2000, #5000 for MLP and Transformer, 10000 for CNN
-        scale=100 # test in {10, 25, 50, 100, 150, 200, 250, 300, 400, 500} for convergence
+        repeat=20,
+        depth=100, #5000 for MLP and Transformer, 10000 for CNN
+        scale=50 # test in {10, 25, 50, 100, 150, 200, 250, 300, 400, 500} for convergence
     )
 
     # Get projection of vec onto inverse-Hessian
     ihvp = module.inverse_hvp(vec)
-    """
 
+    """
     hvp_module = HVPModule(model, MyObjective(), loader, device="cuda")
     ihvp = hso_ihvp(
         vec,
@@ -102,6 +123,7 @@ def fast_hvp(model, vec, loader, criterion, device: str = "cpu"):
         acceleration_order=10,
         num_update_steps=30,
     )
+    """
 
     return ihvp
 
@@ -115,13 +137,21 @@ def compute_hessian(model, loader, criterion, device: str = "cpu"):
             return model(batch[0])
 
         def train_loss_on_outputs(self, outputs, batch):
-            return criterion(outputs, batch[1])  # mean reduction required
+            if outputs.shape[1] == 1:
+                return criterion(outputs.squeeze(1), batch[1].float())  # mean reduction required
+            else:
+                return criterion(outputs, batch[1])  # mean reduction required
 
         def train_regularization(self, params):
             return 0
 
         def test_loss(self, model, params, batch):
-            return criterion(model(batch[0]), batch[1])  # no regularization in test loss
+            output = model(batch[0])
+            # no regularization in test loss
+            if output.shape[1] == 1:
+                return criterion(output.squeeze(1), batch[1].float())
+            else:
+                return criterion(output, batch[1])
 
     model.zero_grad()
 
@@ -184,8 +214,8 @@ def compute_epsilon_acceleration(
 def hso_ihvp(
     vec,
     hvp_module,
-    acceleration_order: int,
-    initial_scale_factor: float = 100,
+    acceleration_order: int = 9,
+    initial_scale_factor: float = 1e6,
     num_update_steps: int = 20,
 ):
 
@@ -257,7 +287,7 @@ if __name__ == "__main__":
     m.zero_grad()
 
     # Get HVP with LiSSA
-    hvp = fast_hvp(m, flat_grad, loader, criterion, device=device)
+    hvp = fast_ihvp(m, flat_grad, loader, criterion, device=device)
     print(hvp)
 
     # Get exact Hessian
