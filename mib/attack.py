@@ -14,6 +14,7 @@ from mib.dataset.utils import get_dataset
 from mib.attacks.utils import get_attack
 from mib.utils import get_signals_path, get_models_path
 from mib.attacks.theory import compute_trace
+from mib.train import get_loader
 
 """
 # Deterministic
@@ -128,7 +129,7 @@ def main(args):
     ds = get_dataset(args.dataset)(augment=False)
 
     # Load target model
-    target_model, _, hparams = get_model(args.model_arch, ds.num_classes)
+    target_model, criterion, hparams = get_model(args.model_arch, ds.num_classes)
     model_dict = ch.load(os.path.join(model_dir, f"{args.target_model_index}.pt"))
     target_model.load_state_dict(model_dict["model"], strict=False)
     target_model.eval()
@@ -161,13 +162,10 @@ def main(args):
     )
 
     # Temporary (for Hessian-related attack)
-    member_dset = ch.utils.data.Subset(train_data, train_index)
-    entire_train_data_loader = ch.utils.data.DataLoader(
-        member_dset, batch_size=8192 * 2, shuffle=False
-    )
+    entire_train_data_loader = get_loader(train_data, train_index, 512)
 
     # For reference-based attacks, train out models
-    attacker = get_attack(args.attack)(target_model)
+    attacker = get_attack(args.attack)(target_model, criterion, all_train_loader=entire_train_data_loader)
 
     # Register trace if required
     if attacker.requires_trace:
@@ -261,9 +259,9 @@ def main(args):
             other_data_source=nonmember_dset_ft,
             out_traces=out_traces_use,
             x_aug=x_aug,
-            out_loader=entire_train_data_loader,
             learning_rate=learning_rate,
             num_samples=num_samples,
+            is_train=True
         )
         signals_in.append(score)
 
@@ -297,17 +295,24 @@ def main(args):
             other_data_source=nonmember_dset_ft,
             out_traces=out_traces_use,
             x_aug=x_aug,
-            out_loader=entire_train_data_loader,
             learning_rate=learning_rate,
             num_samples=num_samples,
+            is_train=False
         )
         signals_out.append(score)
 
     # Save signals
-    signals_in = np.concatenate(signals_in, 0)
-    signals_out = np.concatenate(signals_out, 0)
+    signals_in  = np.array(signals_in).flatten()
+    signals_out = np.array(signals_out).flatten()
     signals_dir = get_signals_path()
     save_dir = os.path.join(signals_dir, args.dataset, args.model_arch, str(args.target_model_index))
+
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    sns.histplot(signals_in, kde=True, stat='probability')
+    sns.histplot(signals_out, kde=True, color="orange", stat='probability')
+    plt.xlabel(r"$loss - (I_2 + I_3)$")
+    plt.savefig("debug.png")
 
     # Make sure save_dir exists
     if not os.path.exists(save_dir):

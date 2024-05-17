@@ -16,18 +16,17 @@ class Attack(object):
         self,
         name: str,
         model,
+        criterion,
         whitebox: bool = False,
         reference_based: bool = False,
-        label_smoothing: float = 0.0,
-        requires_trace: bool = False
+        requires_trace: bool = False,
     ):
         self.name = name
         self.model = model
+        self.criterion = criterion
         self.whitebox = whitebox
         self.reference_based = reference_based
-        self.label_smoothing = label_smoothing
         self.requires_trace = requires_trace
-        self.criterion = ch.nn.CrossEntropyLoss(reduction="none", label_smoothing=self.label_smoothing)
 
     def compute_scores(self, x, y, **kwargs) -> np.ndarray:
         """

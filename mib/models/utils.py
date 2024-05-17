@@ -98,6 +98,11 @@ MODEL_MAPPING = {
         "criterion": nn.MSELoss(),
         "hparams": {"batch_size": 128, "learning_rate": 0.01, "epochs": 100},
     },
+    "lr_mse": {
+        "model": (MLPQuadLoss, (784, [])),
+        "criterion": nn.MSELoss(),
+        "hparams": {"batch_size": 128, "learning_rate": 0.01, "epochs": 100},
+    }
     # "mlp4_slow": {
     #     "model": (MLP, ([512, 256, 128, 64], )),
     #     "criterion": nn.CrossEntropyLoss(),

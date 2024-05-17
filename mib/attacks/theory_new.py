@@ -18,67 +18,135 @@ class ProperTheoryRef(Attack):
     """
     I1 + I3 based term that makes assumption about relationship between I2 and I3.
     """
-    def __init__(self, model):
-        super().__init__("ProperTheoryRef", model, reference_based=False, requires_trace=False, whitebox=True)
+    def __init__(self, model, criterion, all_train_loader, approximate: bool = True):
+        super().__init__("ProperTheoryRef", model, criterion, reference_based=False, requires_trace=False, whitebox=True)
+
+        self.approximate = approximate
+        self.model.cuda()
+
+        self.all_data_grad = self.collect_grad_on_all_data(all_train_loader)
+
+        # Exact Hessian
+        if self.approximate:
+            class MyObjective(BaseObjective):
+                def train_outputs(self, model, batch):
+                    return model(batch[0])
+
+                def train_loss_on_outputs(self, outputs, batch):
+                    if outputs.shape[1] == 1:
+                        return criterion(outputs.squeeze(1), batch[1].float())  # mean reduction required
+                    else:
+                        return criterion(outputs, batch[1])  # mean reduction required
+
+                def train_regularization(self, params):
+                    return 0
+
+                def test_loss(self, model, params, batch):
+                    output = model(batch[0])
+                    # no regularization in test loss
+                    if output.shape[1] == 1:
+                        return criterion(output.squeeze(1), batch[1].float())
+                    else:
+                        return criterion(output, batch[1])
+            
+            # LiSSA - 40s/iteration
+            # GC - 38s/iteration
+            self.ihvp_module = LiSSAInfluenceModule(
+                model=model,
+                objective=MyObjective(),
+                train_loader=all_train_loader,
+                test_loader=None,
+                device="cuda",
+                repeat=2,
+                depth=500,  # 5000 for MLP and Transformer, 10000 for CNN
+                scale=25,
+                damp=1e-2,
+            )
+        else:
+            exact_H = compute_hessian(model, all_train_loader, self.criterion, device="cuda")
+            exact_H_touse = exact_H.cpu().clone().detach()
+
+            # Damping
+            damping = 1e-1
+            L, Q = ch.linalg.eigh(exact_H_touse)
+            L += damping
+            self.H_inverse = Q @ ch.diag(1 / L) @ Q.T
 
     def collect_grad_on_all_data(self, loader):
-        # Collect gradient of model on all data
-        self.model.zero_grad()
+        cumulative_gradients = None
         for x, y in loader:
+            # Zero-out accumulation
+            self.model.zero_grad()
+            # Compute gradients
             x, y = x.cuda(), y.cuda()
-            loss = self.criterion(self.model(x), y).mean()
+            loss = self.criterion(self.model(x).squeeze(), y.float()) * len(x)
             loss.backward()
-        flat_grad = []
-        for p in self.model.parameters():
-            flat_grad.append(p.grad.detach().view(-1))
-        flat_grad = ch.cat(flat_grad) / len(loader.dataset)
+            flat_grad = []
+            for p in self.model.parameters():
+                flat_grad.append(p.grad.detach().view(-1))
+            # Flatten out gradients
+            flat_grad = ch.cat(flat_grad)
+            # Accumulate in higher precision
+            if cumulative_gradients is None:
+                cumulative_gradients = ch.zeros_like(flat_grad, dtype=ch.float64)
+            cumulative_gradients += flat_grad
         self.model.zero_grad()
-        return flat_grad
+        cumulative_gradients /= len(loader.dataset)
+        # TODO: Shift all to float64 precision
+        return cumulative_gradients.float()
 
-    def compute_scores(self, x, y, **kwargs) -> np.ndarray:
-        x, y = x.cuda(), y.cuda()
-        out_loader = kwargs.get("out_loader", None)
-        learning_rate = kwargs.get("learning_rate", None)
-        num_samples = kwargs.get("num_samples", None)
-
-        if out_loader is None:
-            raise ValueError("ProperTheoryRef requires out_traces to be specified")
-        if learning_rate is None:
-            raise ValueError("ProperTheoryRef requires knowledge of learning_rate")
-        if num_samples is None:
-            raise ValueError("ProperTheoryRef requires knowledge of num_samples")
-
-        # Factor out S/(2Ln) parts out of both terms as common
-
-        # I1
-        loss = self.criterion(self.model(x), y)
-        I1 = loss.detach().cpu().numpy()
-
-        # I2
+    def get_specific_grad(self, point_x, point_y):
+        self.model.zero_grad()
+        logits = self.model(point_x.cuda())
+        loss = self.criterion(logits, point_y.unsqueeze(0).float().cuda())
+        ret_loss = loss.item()
         loss.backward()
         flat_grad = []
         for p in self.model.parameters():
             flat_grad.append(p.grad.detach().view(-1))
         flat_grad = ch.cat(flat_grad)
         self.model.zero_grad()
+        return flat_grad, ret_loss
 
-        criterion = ch.nn.CrossEntropyLoss()
-        ihvp = fast_ihvp(self.model, flat_grad, out_loader, criterion, device="cuda")
+    def compute_scores(self, x, y, **kwargs) -> np.ndarray:
+        x, y = x.cuda(), y.cuda()
+        learning_rate = kwargs.get("learning_rate", None)
+        num_samples = kwargs.get("num_samples", None)
+        is_train = kwargs.get("is_train", None)
 
-        # Return self-influence scores
-        sif = ch.dot(flat_grad, ihvp).item()
-        return sif
+        if is_train is None:
+            raise ValueError("ProperTheoryRef requires is_train to be specified (to compute L0 properly)")
+        if learning_rate is None:
+            raise ValueError("ProperTheoryRef requires knowledge of learning_rate")
+        if num_samples is None:
+            raise ValueError("ProperTheoryRef requires knowledge of num_samples")
 
-        # all_data_grad = self.collect_grad_on_all_data(out_loader)
-        # hvp_alldata = fast_ihvp(self.model, all_data_grad, out_loader, criterion, device="cuda")
-        # I3 = ch.dot(hvp_alldata, ihvp).cpu().item() * 2 / learning_rate
+        # Factor out S/(2L*) parts out of both terms as common
+        grad, ret_loss = self.get_specific_grad(x, y)
+        I1 = ret_loss
 
-        I2 = ch.norm(ihvp, p=2).cpu().item() / (learning_rate * num_samples)
-        self.model.zero_grad()
+        if is_train:
+            # Trick to skip computing L0 for all records. Compute L1 (across all data), and then directly calculatee L0 using current grad
+            # We are passing 'is_train' flag here but this is not cheating- could be replaced with repeated L0 computation, but would be unnecessarily expensive
+            all_other_data_grad = (self.all_data_grad * num_samples - grad) / (num_samples - 1)
+        else:
+            all_other_data_grad = self.all_data_grad
 
-        mi_score = I1 + I2
-        # mi_score = I1 - (I2 + I3)
-        return mi_score
+        if self.approximate:
+            datapoint_ihvp = self.ihvp_module.inverse_hvp(grad)
+            ihvp_alldata   = self.ihvp_module.inverse_hvp(all_other_data_grad)
+        else:
+            datapoint_ihvp = (self.H_inverse @ grad.cpu()).cuda()
+            ihvp_alldata   = (self.H_inverse @ all_other_data_grad.cpu()).cuda()
+
+        I2 = ch.dot(datapoint_ihvp, datapoint_ihvp).cpu().item() / num_samples
+        I3 = ch.dot(ihvp_alldata, datapoint_ihvp).cpu().item() * 2
+
+        I2 /= learning_rate
+        I3 /= learning_rate
+
+        mi_score = I1 - (I2 + I3)
+        return mi_score / num_samples
 
 
 def fast_ihvp(model, vec, loader, criterion, device: str = "cpu"):
