@@ -32,7 +32,7 @@ ATTACK_MAPPING = {
     "Activations": Activations,
     "ActivationsOffline": ActivationsOffline,
     "MetaAudit": MetaAudit,
-    "ProperTheoryRef": ProperTheoryRef
+    "ProperTheoryRef": ProperTheoryRef,
 }
 
 

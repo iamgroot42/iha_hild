@@ -15,8 +15,8 @@ class LiRAOffline(Attack):
     Offline verion of LiRA
     """
 
-    def __init__(self, model, fix_variance: bool = True):
-        super().__init__("LiRAOffline", model, reference_based=True)
+    def __init__(self, model, criterion, fix_variance: bool = True):
+        super().__init__("LiRAOffline", model, criterion, reference_based=True)
         self.fix_variance = fix_variance
 
     @ch.no_grad()
@@ -28,12 +28,14 @@ class LiRAOffline(Attack):
         out_models = kwargs.get("out_models", None)
         if out_models is None:
             raise ValueError("LiRAOffline requires out_models to be specified")
-        observed_conf = compute_scaled_logit(self.model, x, y)
+        
+        is_mse = isinstance(self.criterion, ch.nn.MSELoss)
+        observed_conf = compute_scaled_logit(self.model, x, y, mse=is_mse)
 
         confs = []
         for out_model in out_models:
             out_model.cuda()
-            conf = compute_scaled_logit(out_model, x, y)
+            conf = compute_scaled_logit(out_model, x, y, mse=is_mse)
             out_model.cpu()
             confs.append(conf)
         confs = np.array(confs)
@@ -60,8 +62,8 @@ class LiRAOnline(Attack):
     """
     Online verion of LiRA
     """
-    def __init__(self, model, fix_variance: bool = True):
-        super().__init__("LiRAOnline", model, reference_based=True)
+    def __init__(self, model, criterion, fix_variance: bool = True):
+        super().__init__("LiRAOnline", model, criterion, reference_based=True)
         self.fix_variance = fix_variance
 
     @ch.no_grad()
@@ -74,7 +76,9 @@ class LiRAOnline(Attack):
             raise ValueError(
                 "LiRAOnline requires out_models and in_models to be specified"
             )
-        observed_conf = compute_scaled_logit(self.model, x, y)
+
+        is_mse = isinstance(self.criterion, ch.nn.MSELoss)
+        observed_conf = compute_scaled_logit(self.model, x, y, mse=is_mse)
 
         # if specified, also use augmented data
         x_ref_use, y_ref_use = x, y
@@ -87,7 +91,7 @@ class LiRAOnline(Attack):
         confs_out = []
         for out_model in out_models:
             out_model.cuda()
-            conf = compute_scaled_logit(out_model, x_ref_use, y_ref_use)
+            conf = compute_scaled_logit(out_model, x_ref_use, y_ref_use, mse=is_mse)
             out_model.cpu()
             confs_out.append(conf)
         confs_out = np.array(confs_out)
@@ -96,7 +100,7 @@ class LiRAOnline(Attack):
         confs_in = []
         for in_model in in_models:
             in_model.cuda()
-            conf = compute_scaled_logit(in_model, x_ref_use, y_ref_use)
+            conf = compute_scaled_logit(in_model, x_ref_use, y_ref_use, mse=is_mse)
             in_model.cpu()
             confs_in.append(conf)
         confs_in = np.array(confs_in)
@@ -134,9 +138,9 @@ class LiRAOnlineSmooth(Attack):
     """
         Version of LiRA-Online that uses label-smoothing in loss computation.
     """
-    def __init__(self, model, fix_variance: bool = True):
+    def __init__(self, model, criterion, fix_variance: bool = True):
         super().__init__(
-            "LiRAOnlineSmooth", model, reference_based=True, label_smoothing=5e-4
+            "LiRAOnlineSmooth", model, criterion, reference_based=True, label_smoothing=5e-4
         )
         self.fix_variance = fix_variance
 

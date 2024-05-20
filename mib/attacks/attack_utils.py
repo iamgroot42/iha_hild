@@ -26,13 +26,20 @@ def compute_gradients(model, criterion, a, b, pick_specific_layer: int = None) -
     return grads
 
 
-def compute_scaled_logit(model, x, y) -> np.ndarray:
+def compute_scaled_logit(model, x, y, mse: bool = False) -> np.ndarray:
     """
     Compute scaled logit of model given datapoints
     """
     model.cuda()
     oprediction = model(x).detach()
     model.cpu()
+    eps = 1e-45
+
+    if mse:
+        # oprediction will include sigmoid, so reverse-engineer that first
+        logit = ch.log(oprediction + eps) - ch.log(1 - oprediction + eps)
+        return logit.cpu().numpy()
+
     # For numerical stability
     predictions = oprediction - ch.max(oprediction, dim=1, keepdim=True)[0]
     predictions = ch.exp(predictions)
@@ -41,7 +48,6 @@ def compute_scaled_logit(model, x, y) -> np.ndarray:
     y_true = predictions[range(predictions.shape[0]), y]
     y_wrong = 1 - y_true
 
-    eps = 1e-45
     logit = ch.log(y_true + eps) - ch.log(y_wrong + eps)
     return logit.cpu().numpy()
 

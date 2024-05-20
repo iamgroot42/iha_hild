@@ -12,8 +12,8 @@ class Reference(Attack):
     """
     Reference-based attack
     """
-    def __init__(self, model):
-        super().__init__("Reference", model, reference_based=True)
+    def __init__(self, model, criterion):
+        super().__init__("Reference", model, criterion, reference_based=True)
 
     def compute_scores(self, x, y, **kwargs) -> np.ndarray:
         out_models = kwargs.get("out_models", None)
@@ -55,14 +55,20 @@ class ReferenceAlex(Attack):
 def compute_ref_score(model, x, y, out_models, criterion, proper_ref_aggregate: bool = False):
     x, y = x.cuda(), y.cuda()
     model.cuda()
-    loss = criterion(model(x.cuda()).detach(), y.cuda()).cpu().numpy()
+    logits = model(x.cuda()).detach()
+    if logits.shape[1] == 1:
+        logits = logits.squeeze(1)
+    loss = criterion(logits, y.cuda()).cpu().numpy()
     model.cpu()
 
     ref_losses = []
     for out_model in out_models:
         out_model.cuda()
+        logits = out_model(x.cuda()).detach()
+        if logits.shape[1] == 1:
+            logits = logits.squeeze(1)
         ref_loss = (
-            criterion(out_model(x.cuda()).detach(), y.cuda()).cpu().numpy()
+            criterion(logits, y.cuda()).cpu().numpy()
         )
         out_model.cpu()
         ref_losses.append(ref_loss)
@@ -73,8 +79,5 @@ def compute_ref_score(model, x, y, out_models, criterion, proper_ref_aggregate: 
     else:
         mean_out = np.mean(ref_losses, 0)
 
-    scores = []
-    for mo in mean_out:
-        scores.append(loss - mo)
-    scores = np.array(scores)
+    scores = np.array(loss - mean_out)
     return -scores

@@ -13,12 +13,15 @@ class LOSS(Attack):
     Standard LOSS attack.
     """
 
-    def __init__(self, model):
-        super().__init__("LOSS", model)
+    def __init__(self, model, criterion):
+        super().__init__("LOSS", model, criterion)
 
     @ch.no_grad()
     def compute_scores(self, x, y, **kwargs) -> np.ndarray:
-        loss = self.criterion(self.model(x.cuda()).detach(), y.cuda())
+        logits = self.model(x.cuda()).detach()
+        if logits.shape[1] == 1:
+            logits = logits.squeeze(1)
+        loss = self.criterion(logits, y.cuda())
         return -loss.cpu().numpy()
 
 

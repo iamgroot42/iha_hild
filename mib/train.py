@@ -247,6 +247,7 @@ def main(save_dir: str, args):
     same_init = args.init_ref
     skip_model = args.l_mode_ref_model
     skip_data_index = args.l_mode_ref_point
+    replica = args.replica
     # Follow setup of LiRA
     # 50% of data is used for training model
     # Other 50% used to train quantile model, and also serve as non-members
@@ -269,6 +270,14 @@ def main(save_dir: str, args):
         save_dir_use = os.path.join(save_dir_use, f"same_init/{same_init}")
     if skip_model is not None:
         save_dir_use = os.path.join(save_dir_use, f"l_mode/{skip_model}/{skip_data_index}")
+    if replica is not None:
+        save_dir_use = os.path.join(save_dir_use, f"replica/{replica}/")
+        # Load train_index, test_index corresponding to specified model
+        state_dict = ch.load(f"{save_dir}/{replica}.pt")
+        train_index = state_dict["train_index"]
+        test_index = state_dict["test_index"]
+        train_data = ds.get_train_data()
+        test_data = ds.get_test_data()
 
     if args.pick_n != 1:
         save_dir_use = os.path.join(save_dir_use, f"{args.pick_mode}_{args.pick_n}")
@@ -302,9 +311,10 @@ def main(save_dir: str, args):
         model = ch.nn.parallel.DataParallel(model)
 
         # Get data
-        train_index, test_index, train_data, test_data = ds.make_splits(
-            seed=args.data_seed, num_experiments=n_models, pkeep=pkeep, exp_id=i
-        )
+        if replica is None:
+            train_index, test_index, train_data, test_data = ds.make_splits(
+                seed=args.data_seed, num_experiments=n_models, pkeep=pkeep, exp_id=i
+            )
 
         # Leave-one-out setting
         if skip_model is not None:
@@ -384,6 +394,12 @@ if __name__ == "__main__":
     args.add_argument("--pick_n", type=int, default=1, help="Of all checkpoints, keep n.")
     args.add_argument("--pick_mode", type=str, default="last", help="Criteria for picking N checkpoints.")
     args.add_argument(
+        "--replica",
+        type=int,
+        default=None,
+        help="Train models with exact same data as model specified by replica",
+    )
+    args.add_argument(
         "--init_ref",
         type=int,
         default=None,
@@ -410,7 +426,7 @@ if __name__ == "__main__":
     if args.pick_mode not in ["best", "last"]:
         raise ValueError("pick_mode must be 'best' or 'last'")
     if (args.l_mode_ref_model == None) != (args.l_mode_ref_point == None):
-        raise ValueError("l_mode_ref_model and l_mode_ref_point must be used together")
+        raise ValueError("l_mode_ref_model and l_mode_ref_point must be used together.")
 
     save_dir = get_models_path()
     main(os.path.join(save_dir, args.dataset, args.model_arch), args)
