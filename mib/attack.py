@@ -12,7 +12,7 @@ from mib.models.utils import get_model
 from sklearn.metrics import roc_curve, auc
 from mib.dataset.utils import get_dataset
 from mib.attacks.utils import get_attack
-from mib.utils import get_signals_path, get_models_path
+from mib.utils import get_signals_path, get_models_path, get_misc_path
 from mib.attacks.theory import compute_trace
 from mib.train import get_loader
 
@@ -33,9 +33,16 @@ def member_nonmember_loaders(
     batch_size: int = 1,
     want_all_member_nonmember: bool = False
 ):
+    """
+    num_points_sample = -1 means all points should be used, and # of non-members will be set to be = # of members
+    """
     other_indices_train = np.array(
         [i for i in range(len(train_data)) if i not in train_idx]
     )
+
+    want_all_members_and_equal_non_members = num_points_sample == -1
+    if want_all_members_and_equal_non_members:
+        num_points_sample = min(len(train_idx), len(other_indices_train))
 
     # Create Subset datasets for members
     if want_all_member_nonmember:
@@ -47,11 +54,18 @@ def member_nonmember_loaders(
     # Sample non-members
     np.random.seed(args.exp_seed + 1)
     nonmember_indices = np.random.choice(
-        other_indices_train, num_nontrain_pool, replace=False
+        other_indices_train,
+        (
+            num_nontrain_pool
+            if not want_all_members_and_equal_non_members
+            else num_points_sample
+        ),
+        replace=False,
     )
 
-    if want_all_member_nonmember:
+    if want_all_member_nonmember or want_all_members_and_equal_non_members:
         nonmember_index_subset = nonmember_indices
+        nonmember_dset_ft = None
     else:
         # Break nonmember_indices here into 2 - one for sprinkling in FT data, other for actual non-members
         nonmember_indices_ft = nonmember_indices[: num_nontrain_pool // 2]
@@ -62,7 +76,9 @@ def member_nonmember_loaders(
         # Sample non-members
         np.random.seed(args.exp_seed + 2)
         nonmember_index_subset = np.random.choice(
-            nonmember_indices_test, num_points_sample, replace=False
+            nonmember_indices_test,
+            num_points_sample,
+            replace=False,
         )
 
     # Make dsets
@@ -79,6 +95,12 @@ def member_nonmember_loaders(
     nonmember_loader = ch.utils.data.DataLoader(
         nonmember_dset, batch_size=batch_size, shuffle=False
     )
+
+    # Assert no overlap between train_index_subset and nonmember_index_subset
+    # Just to make sure nothing went wrong above!
+    if len(set(train_index_subset).intersection(set(nonmember_index_subset))) != 0:
+        print("Non-overlap found between train and non-member data. Shouldn't have happened! Check code.")
+        exit(0)
 
     if want_all_member_nonmember:
         return member_loader, nonmember_loader
@@ -158,14 +180,25 @@ def main(args):
         train_index,
         args.num_points,
         args,
-        num_nontrain_pool,
+        num_nontrain_pool
     )
 
     # Temporary (for Hessian-related attack)
     entire_train_data_loader = get_loader(train_data, train_index, 512)
 
+    hessian = None
+    # If attack uses uses_hessian, try loading from disk if available
+    hessian_store_path = os.path.join(
+        get_misc_path(), args.dataset, args.model_arch, str(args.target_model_index)
+    )
+    if os.path.exists(os.path.join(hessian_store_path, "hessian.ch")):
+        hessian = ch.load(os.path.join(hessian_store_path, "hessian.ch"))
+        print("Loaded Hessian!")
+
     # For reference-based attacks, train out models
-    attacker = get_attack(args.attack)(target_model, criterion, all_train_loader=entire_train_data_loader)
+    attacker = get_attack(args.attack)(target_model, criterion,
+                                       all_train_loader=entire_train_data_loader,
+                                       hessian=hessian)
 
     # Register trace if required
     if attacker.requires_trace:
@@ -306,6 +339,13 @@ def main(args):
     signals_out = np.array(signals_out).flatten()
     signals_dir = get_signals_path()
     save_dir = os.path.join(signals_dir, args.dataset, args.model_arch, str(args.target_model_index))
+
+    # Save Hessian, if computed and didn't exist before
+    if not os.path.exists(os.path.join(hessian_store_path, "hessian.ch")):
+        os.makedirs(hessian_store_path, exist_ok=True)
+        ch.save(attacker.get_hessian(), os.path.join(hessian_store_path, "hessian.ch"))
+        print("Saved Hessian!")
+        
 
     import seaborn as sns
     import matplotlib.pyplot as plt

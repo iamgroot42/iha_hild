@@ -7,19 +7,30 @@ import numpy as np
 import torch as ch
 
 from mib.attacks.base import Attack
-from torch.autograd import functional as F
 from torch.autograd import grad
-from torch.func import functional_call
 from torch_influence import BaseObjective
-from torch_influence import AutogradInfluenceModule, LiSSAInfluenceModule, HVPModule
+from torch_influence import AutogradInfluenceModule, LiSSAInfluenceModule, HVPModule, CGInfluenceModule
 
 
 class ProperTheoryRef(Attack):
     """
     I1 + I3 based term that makes assumption about relationship between I2 and I3.
     """
-    def __init__(self, model, criterion, all_train_loader, approximate: bool = True):
-        super().__init__("ProperTheoryRef", model, criterion, reference_based=False, requires_trace=False, whitebox=True)
+    def __init__(self, model, criterion, **kwargs):
+        all_train_loader = kwargs.get("all_train_loader", None)
+        approximate = kwargs.get("approximate", False)
+        hessian = kwargs.get("hessian", None)
+        if all_train_loader is None:
+            raise ValueError("ProperTheoryRef requires all_train_loader to be specified")
+        super().__init__(
+            "ProperTheoryRef",
+            model,
+            criterion,
+            reference_based=False,
+            requires_trace=False,
+            whitebox=True,
+            uses_hessian=not approximate,
+        )
 
         self.approximate = approximate
         self.model.cuda()
@@ -48,28 +59,53 @@ class ProperTheoryRef(Attack):
                         return criterion(output.squeeze(1), batch[1].float())
                     else:
                         return criterion(output, batch[1])
-            
+
             # LiSSA - 40s/iteration
             # GC - 38s/iteration
+            """
             self.ihvp_module = LiSSAInfluenceModule(
                 model=model,
                 objective=MyObjective(),
                 train_loader=all_train_loader,
                 test_loader=None,
                 device="cuda",
-                repeat=2,
-                depth=500,  # 5000 for MLP and Transformer, 10000 for CNN
+                repeat=4,
+                depth=100,  # 5000 for MLP and Transformer, 10000 for CNN
                 scale=25,
+                damp=2e-1,
+            )
+            """
+            self.ihvp_module = CGInfluenceModule(
+                model=model,
+                objective=MyObjective(),
+                train_loader=all_train_loader,
+                test_loader=None,
+                device="cuda",
                 damp=1e-2,
             )
+            # """
         else:
-            exact_H = compute_hessian(model, all_train_loader, self.criterion, device="cuda")
-            exact_H_touse = exact_H.cpu().clone().detach()
+            if hessian is None:
+                exact_H = compute_hessian(model, all_train_loader, self.criterion, device="cuda")
+                self.hessian = exact_H.cpu().clone().detach()
+            else:
+                self.hessian = hessian
 
-            # Damping
-            damping = 1e-1
-            L, Q = ch.linalg.eigh(exact_H_touse)
-            L += damping
+            L, Q = ch.linalg.eigh(self.hessian)
+            eps = 2e-1
+
+            # Low-rank approximation
+            # 1e-1 seems to work pretty well
+            # 1e-1 : 0.532
+            # qualifying_indices = ch.abs(L) > eps
+            # Q_select = Q[:, qualifying_indices]
+            # self.H_inverse = Q_select @ ch.diag(1 / L[qualifying_indices]) @ Q_select.T
+
+            # Damping (MNISTodd-0)
+            # 1e-2: 0.521
+            # 1e-1: 0.545
+            # 2e-1: 0.550
+            L += eps
             self.H_inverse = Q @ ch.diag(1 / L) @ Q.T
 
     def collect_grad_on_all_data(self, loader):
@@ -79,7 +115,11 @@ class ProperTheoryRef(Attack):
             self.model.zero_grad()
             # Compute gradients
             x, y = x.cuda(), y.cuda()
-            loss = self.criterion(self.model(x).squeeze(), y.float()) * len(x)
+            logits = self.model(x)
+            if logits.shape[1] == 1:
+                loss = self.criterion(logits.squeeze(), y.float()) * len(x)
+            else:
+                loss = self.criterion(logits, y) * len(x)
             loss.backward()
             flat_grad = []
             for p in self.model.parameters():
@@ -88,17 +128,19 @@ class ProperTheoryRef(Attack):
             flat_grad = ch.cat(flat_grad)
             # Accumulate in higher precision
             if cumulative_gradients is None:
-                cumulative_gradients = ch.zeros_like(flat_grad, dtype=ch.float64)
+                cumulative_gradients = ch.zeros_like(flat_grad)
             cumulative_gradients += flat_grad
         self.model.zero_grad()
         cumulative_gradients /= len(loader.dataset)
-        # TODO: Shift all to float64 precision
-        return cumulative_gradients.float()
+        return cumulative_gradients
 
     def get_specific_grad(self, point_x, point_y):
         self.model.zero_grad()
         logits = self.model(point_x.cuda())
-        loss = self.criterion(logits, point_y.unsqueeze(0).float().cuda())
+        if logits.shape[1] == 1:
+            loss = self.criterion(logits.squeeze(1), point_y.float().cuda())
+        else:
+            loss = self.criterion(logits, point_y.cuda())
         ret_loss = loss.item()
         loss.backward()
         flat_grad = []
@@ -126,8 +168,9 @@ class ProperTheoryRef(Attack):
         I1 = ret_loss
 
         if is_train:
-            # Trick to skip computing L0 for all records. Compute L1 (across all data), and then directly calculatee L0 using current grad
+            # Trick to skip computing L0 for all records. Compute L1 (across all data), and then directly calculate L0 using current grad
             # We are passing 'is_train' flag here but this is not cheating- could be replaced with repeated L0 computation, but would be unnecessarily expensive
+            # all_other_data_grad = self.all_data_grad - (grad / num_samples)
             all_other_data_grad = (self.all_data_grad * num_samples - grad) / (num_samples - 1)
         else:
             all_other_data_grad = self.all_data_grad
@@ -146,7 +189,8 @@ class ProperTheoryRef(Attack):
         I3 /= learning_rate
 
         mi_score = I1 - (I2 + I3)
-        return mi_score / num_samples
+        # return -I3
+        return mi_score
 
 
 def fast_ihvp(model, vec, loader, criterion, device: str = "cpu"):

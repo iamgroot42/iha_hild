@@ -11,8 +11,8 @@ class GradientNorm(Attack):
     Compute gradient norm of the model wrt input.
     """
 
-    def __init__(self, model):
-        super().__init__("GradientNorm", model, whitebox=True)
+    def __init__(self, model, criterion):
+        super().__init__("GradientNorm", model, criterion, whitebox=True)
 
     def compute_scores(self, x, y, **kwargs) -> np.ndarray:
         x, y = x.cuda(), y.cuda()

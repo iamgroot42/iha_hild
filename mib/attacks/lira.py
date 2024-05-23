@@ -62,7 +62,8 @@ class LiRAOnline(Attack):
     """
     Online verion of LiRA
     """
-    def __init__(self, model, criterion, fix_variance: bool = True):
+    def __init__(self, model, criterion,  **kwargs):
+        fix_variance = kwargs.get("fix_variance", True)
         super().__init__("LiRAOnline", model, criterion, reference_based=True)
         self.fix_variance = fix_variance
 

@@ -71,6 +71,39 @@ MODEL_MAPPING = {
         "criterion": nn.CrossEntropyLoss(),
         "hparams": {"batch_size": 256, "learning_rate": 0.02, "epochs": 120},
     },
+    "mlp2": {
+        "model": (
+            MLP,
+            (
+                600,
+                [32],
+            ),
+        ),
+        "criterion": nn.CrossEntropyLoss(),
+        "hparams": {"batch_size": 256, "learning_rate": 0.02, "epochs": 120},
+    },
+    "mlp2_fmnist": {
+        "model": (
+            MLP,
+            (
+                784,
+                [6],
+            ),
+        ),
+        "criterion": nn.CrossEntropyLoss(),
+        "hparams": {"batch_size": 256, "learning_rate": 0.01, "epochs": 120},
+    },
+    "lr": {
+        "model": (
+            MLP,
+            (
+                600,
+                [],
+            ),
+        ),
+        "criterion": nn.CrossEntropyLoss(),
+        "hparams": {"batch_size": 256, "learning_rate": 0.01, "epochs": 120},
+    },
     "mlp_mnist17": {
         "model": (
             MLP,
@@ -102,7 +135,7 @@ MODEL_MAPPING = {
         "model": (MLPQuadLoss, (784, [])),
         "criterion": nn.MSELoss(),
         "hparams": {"batch_size": 128, "learning_rate": 0.01, "epochs": 100},
-    }
+    },
     # "mlp4_slow": {
     #     "model": (MLP, ([512, 256, 128, 64], )),
     #     "criterion": nn.CrossEntropyLoss(),

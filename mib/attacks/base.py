@@ -20,6 +20,7 @@ class Attack(object):
         whitebox: bool = False,
         reference_based: bool = False,
         requires_trace: bool = False,
+        uses_hessian: bool = False
     ):
         self.name = name
         self.model = model
@@ -27,6 +28,12 @@ class Attack(object):
         self.whitebox = whitebox
         self.reference_based = reference_based
         self.requires_trace = requires_trace
+        self.uses_hessian = uses_hessian
+    
+    def get_hessian(self):
+        if not self.uses_hessian:
+            raise ValueError("Hessian is not used by this attack")
+        return self.hessian
 
     def compute_scores(self, x, y, **kwargs) -> np.ndarray:
         """

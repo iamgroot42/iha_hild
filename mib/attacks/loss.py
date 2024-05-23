@@ -13,7 +13,7 @@ class LOSS(Attack):
     Standard LOSS attack.
     """
 
-    def __init__(self, model, criterion):
+    def __init__(self, model, criterion, **kwargs):
         super().__init__("LOSS", model, criterion)
 
     @ch.no_grad()
