@@ -21,7 +21,9 @@ ATTACKS_TO_PLOT = [
     # "LiRAOnline",
     # "LiRAOffline",
     # "LiRAOnline_aug",
-    # "LOSS",
+    "LOSS",
+    "GradNorm",
+    "LiRAOnline",
     # "LiRAOnline_same_seed_ref",
     # "LiRAOnline_same_seed_ref_aug",
     # "LiRAOnline_20_ref_aug",
@@ -49,12 +51,13 @@ def main(args):
         inside_model_index = os.path.join(signals_path, model_index)
 
         for attack in os.listdir(inside_model_index):
-            attack_name = attack.split(".")[0]
-            # """
+            # Remove ".ch" from end
+            attack_name = attack[:-4]
+            """
             if attack_name not in ATTACKS_TO_PLOT:
                 print("Skipping", attack_name, "...")
                 continue
-            # """
+            """
             data = np.load(os.path.join(inside_model_index, attack), allow_pickle=True).item()
 
             signals_in = data["in"]
@@ -76,13 +79,20 @@ def main(args):
             }
             info[attack_name].append(info_)
 
-    # Aggregate results across models
+    """
     # First, assert we have same # of models per attack
     num_models = [len(info[attack_name]) for attack_name in info.keys()]
     if len(set(num_models)) != 1:
         raise ValueError("Different number of models per attack:", {k:len(v) for k,v in info.items()})
     print("Number of models per attack:", num_models[0])
+    """
 
+    # Plot ROC curves
+    sns.set_style("whitegrid")
+    sns.set_context("paper")
+    sns.set_palette("tab10")
+
+    # Aggregate results across models
     df_for_sns = []
     for attack_name, info_ in info.items():
         mean_auc = np.mean([i["roc_auc"] for i in info_])
@@ -114,17 +124,16 @@ def main(args):
         for fpr, tpr in zip(fpr_values, tpr_values):
             df_for_sns.append({"FPR": fpr, "TPR": tpr, "Attack": "%s (AUC=%.3f)" % (attack_name, mean_auc)})
         """
-        for fpr, tpr in zip(info_[0]["fpr"], info_[0]["tpr"]):
+        for fpr, tpr in zip(info_[args.which_plot]["fpr"], info_[args.which_plot]["tpr"]):
             df_for_sns.append({"FPR": fpr, "TPR": tpr, "Attack": "%s (AUC=%.3f)" % (attack_name, mean_auc)})
 
-    df_for_sns = pd.DataFrame(df_for_sns)
     exit(0)
-
-    # Plot ROC curves
-    sns.set_style("whitegrid")
-    sns.set_context("paper")
-    sns.set_palette("tab10")
+    df_for_sns = pd.DataFrame(df_for_sns)
     sns.lineplot(data=df_for_sns, x="FPR", y="TPR", hue="Attack")
+
+    # TODO: Increase font
+    # TODO: Fix plot (current plot has shadings)
+    # TODO: Change to PDF (fina)
 
     # Make sure plot directory exists
     if not os.path.exists(args.plotdir):
@@ -137,14 +146,14 @@ def main(args):
     plt.ylim([0, 1])
     plt.ylabel("TPR")
     plt.xlabel("FPR")
-    plt.savefig(os.path.join(args.plotdir, "roc.png"))
+    plt.savefig(os.path.join(args.plotdir, f"{args.dataset}_{args.model_arch}_roc.png"))
 
     # Also save low TPR/FPR region
     plt.xlim([1e-5, 1e0])
     plt.ylim([1e-5, 1e0])
     plt.xscale("log")
     plt.yscale("log")
-    plt.savefig(os.path.join(args.plotdir, "roc_lowfpr.png"))
+    plt.savefig(os.path.join(args.plotdir, f"{args.dataset}_{args.model_arch}_roc_lowfpr.png"))
 
 
 if __name__ == "__main__":
@@ -152,5 +161,6 @@ if __name__ == "__main__":
     args.add_argument("--model_arch", type=str, default="wide_resnet_28_2")
     args.add_argument("--dataset", type=str, default="cifar10")
     args.add_argument("--plotdir", type=str, default="./plots")
+    args.add_argument("--which_plot", type=int, default=0, help="Plot TPR-FPR curves for this specific model")
     args = args.parse_args()
     main(args)

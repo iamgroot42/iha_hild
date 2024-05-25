@@ -15,6 +15,7 @@ from mib.attacks.utils import get_attack
 from mib.utils import get_signals_path, get_models_path, get_misc_path
 from mib.attacks.theory import compute_trace
 from mib.train import get_loader
+from sklearn.ensemble import RandomForestClassifier
 
 """
 # Deterministic
@@ -198,7 +199,9 @@ def main(args):
     # For reference-based attacks, train out models
     attacker = get_attack(args.attack)(target_model, criterion,
                                        all_train_loader=entire_train_data_loader,
-                                       hessian=hessian)
+                                       hessian=hessian,
+                                       damping_eps=args.damping_eps,
+                                       low_rank=args.low_rank,)
 
     # Register trace if required
     if attacker.requires_trace:
@@ -340,20 +343,6 @@ def main(args):
     signals_dir = get_signals_path()
     save_dir = os.path.join(signals_dir, args.dataset, args.model_arch, str(args.target_model_index))
 
-    # Save Hessian, if computed and didn't exist before
-    if not os.path.exists(os.path.join(hessian_store_path, "hessian.ch")):
-        os.makedirs(hessian_store_path, exist_ok=True)
-        ch.save(attacker.get_hessian(), os.path.join(hessian_store_path, "hessian.ch"))
-        print("Saved Hessian!")
-        
-
-    import seaborn as sns
-    import matplotlib.pyplot as plt
-    sns.histplot(signals_in, kde=True, stat='probability')
-    sns.histplot(signals_out, kde=True, color="orange", stat='probability')
-    plt.xlabel(r"$loss - (I_2 + I_3)$")
-    plt.savefig("debug.png")
-
     # Make sure save_dir exists
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
@@ -364,10 +353,39 @@ def main(args):
         attack_name += "_same_seed_ref"
     if args.num_ref_models is not None:
         attack_name += f"_{args.num_ref_models}_ref"
-    if args.suffix is not None:
-        suffix = f"_{args.suffix}"
     if args.aug:
         attack_name += "_aug"
+    if attacker.uses_hessian:
+        attack_name += f"_damping_{args.damping_eps}_lowrank_{args.low_rank}"
+
+    if args.suffix is not None:
+        suffix = f"_{args.suffix}"
+
+    if args.simulate_metaclf:
+        # Use a 2-depth decision tree to fit a meta-classifier
+        signals_in_, signals_out_ = [], []
+        for i in tqdm(range(len(signals_in)), desc="Meta-Clf(In)"):
+            # Concatenate all data except signals_in[i], along with signals_out
+            # With appropriate labels
+            X = np.concatenate((signals_in[:i], signals_in[i + 1 :], signals_out)).reshape(-1, 1)
+            Y = np.concatenate((np.ones(len(signals_in) - 1), np.zeros(len(signals_out))))
+            # Use randomforest
+            clf = RandomForestClassifier(max_depth=2)
+            clf.fit(X, Y)
+            # Get prediction for signals_in[i]
+            pred = clf.predict_proba(signals_in[i].reshape(1, -1))[0][1]
+            signals_in_.append(pred)
+        # Repeat same for signals_out
+        for i in tqdm(range(len(signals_out)), desc="Meta-Clf(Out)"):
+            X = np.concatenate((signals_out[:i], signals_out[i + 1 :], signals_in)).reshape(-1, 1)
+            Y = np.concatenate((np.zeros(len(signals_out) - 1), np.ones(len(signals_in))))
+            clf = RandomForestClassifier(max_depth=2)
+            clf.fit(X, Y)
+            pred = clf.predict_proba(signals_out[i].reshape(1, -1))[0][1]
+            signals_out_.append(pred)
+        # Replace with these scores
+        signals_in = np.array(signals_in_)
+        signals_out = np.array(signals_out_)
 
     # Print out ROC
     total_labels = [0] * len(signals_out) + [1] * len(signals_in)
@@ -376,6 +394,7 @@ def main(args):
     roc_auc = auc(fpr, tpr)
     print("AUC: %.3f" % roc_auc)
 
+    # Save results
     np.save(
         f"{save_dir}/{attack_name}{suffix}.npy",
         {
@@ -384,6 +403,14 @@ def main(args):
         },
     )
 
+    # Save Hessian, if computed and didn't exist before
+    if attacker.uses_hessian and (
+        not os.path.exists(os.path.join(hessian_store_path, "hessian.ch"))
+    ):
+        os.makedirs(hessian_store_path, exist_ok=True)
+        ch.save(attacker.get_hessian(), os.path.join(hessian_store_path, "hessian.ch"))
+        print("Saved Hessian!")
+
 
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
@@ -391,8 +418,19 @@ if __name__ == "__main__":
     args.add_argument("--dataset", type=str, default="cifar10")
     args.add_argument("--attack", type=str, default="LOSS")
     args.add_argument("--exp_seed", type=int, default=2024)
+    args.add_argument("--damping_eps", type=float, default=1e-2, help="Damping for Hessian computation (only valid for some attacks)")
+    args.add_argument(
+        "--low_rank",
+        action="store_true",
+        help="If true, use low-rank approximation of Hessian. Else, use damping. Useful for inverse",
+    )
     args.add_argument("--target_model_index", type=int, default=0)
     args.add_argument("--num_ref_models", type=int, default=None)
+    args.add_argument(
+        "--simulate_metaclf",
+        action="store_true",
+        help="If true, use scores as features and fit LOO-style meta-classifier for each target datapoint",
+    )
     args.add_argument("--l_mode", action="store_true", help="L-mode (where out reference model is trained on all data except target record)")
     args.add_argument("--aug", action="store_true", help="Use augmented data?")
     args.add_argument(

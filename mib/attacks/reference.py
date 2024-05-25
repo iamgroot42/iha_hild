@@ -12,7 +12,7 @@ class Reference(Attack):
     """
     Reference-based attack
     """
-    def __init__(self, model, criterion):
+    def __init__(self, model, criterion, **kwargs):
         super().__init__("Reference", model, criterion, reference_based=True)
 
     def compute_scores(self, x, y, **kwargs) -> np.ndarray:

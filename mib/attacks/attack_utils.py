@@ -8,7 +8,10 @@ def compute_gradients(model, criterion, a, b, pick_specific_layer: int = None) -
     """
     model.zero_grad()
     pred = model(a)
-    loss = criterion(pred, b).mean()
+    if pred.shape[1] == 1:
+        loss = criterion(pred.squeeze(1), b.float()).mean()
+    else:
+        loss = criterion(pred, b).mean()
     loss.backward()
     grads = []
     total_layers_avail = 0

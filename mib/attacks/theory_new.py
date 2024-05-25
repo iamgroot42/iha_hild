@@ -20,6 +20,9 @@ class ProperTheoryRef(Attack):
         all_train_loader = kwargs.get("all_train_loader", None)
         approximate = kwargs.get("approximate", False)
         hessian = kwargs.get("hessian", None)
+        damping_eps = kwargs.get("damping_eps", 2e-1)
+        low_rank = kwargs.get("low_rank", False)
+
         if all_train_loader is None:
             raise ValueError("ProperTheoryRef requires all_train_loader to be specified")
         super().__init__(
@@ -92,21 +95,16 @@ class ProperTheoryRef(Attack):
                 self.hessian = hessian
 
             L, Q = ch.linalg.eigh(self.hessian)
-            eps = 2e-1
 
-            # Low-rank approximation
-            # 1e-1 seems to work pretty well
-            # 1e-1 : 0.532
-            # qualifying_indices = ch.abs(L) > eps
-            # Q_select = Q[:, qualifying_indices]
-            # self.H_inverse = Q_select @ ch.diag(1 / L[qualifying_indices]) @ Q_select.T
-
-            # Damping (MNISTodd-0)
-            # 1e-2: 0.521
-            # 1e-1: 0.545
-            # 2e-1: 0.550
-            L += eps
-            self.H_inverse = Q @ ch.diag(1 / L) @ Q.T
+            if low_rank:
+                # Low-rank approximation
+                qualifying_indices = ch.abs(L) > damping_eps
+                Q_select = Q[:, qualifying_indices]
+                self.H_inverse = Q_select @ ch.diag(1 / L[qualifying_indices]) @ Q_select.T
+            else:
+                # Damping
+                L += damping_eps
+                self.H_inverse = Q @ ch.diag(1 / L) @ Q.T
 
     def collect_grad_on_all_data(self, loader):
         cumulative_gradients = None
