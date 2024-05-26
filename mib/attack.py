@@ -390,6 +390,24 @@ def main(args):
     # Print out ROC
     total_labels = [0] * len(signals_out) + [1] * len(signals_in)
     total_preds = np.concatenate((signals_out, signals_in))
+
+    # If SIF attack, need to perform thresholding
+    # Consider extreme case of actual work, where we consider n-1 setting
+    if args.attack == "SIF":
+
+        """
+        # If prediction label does not match, classify as non-member
+        logit = self.model(x.cuda())
+        # If MSE loss
+        if type(self.criterion).__name__ == "MSELoss":
+            pred = (logit.squeeze(1) > 0.5).float()
+        else:
+            pred = logit.argmax(dim=1)
+        if pred != y:
+            return 0
+        """
+        pass
+
     fpr, tpr, _ = roc_curve(total_labels, total_preds)
     roc_auc = auc(fpr, tpr)
     print("AUC: %.3f" % roc_auc)
@@ -418,7 +436,7 @@ if __name__ == "__main__":
     args.add_argument("--dataset", type=str, default="cifar10")
     args.add_argument("--attack", type=str, default="LOSS")
     args.add_argument("--exp_seed", type=int, default=2024)
-    args.add_argument("--damping_eps", type=float, default=1e-2, help="Damping for Hessian computation (only valid for some attacks)")
+    args.add_argument("--damping_eps", type=float, default=2e-1, help="Damping for Hessian computation (only valid for some attacks)")
     args.add_argument(
         "--low_rank",
         action="store_true",

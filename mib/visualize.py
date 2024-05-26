@@ -3,18 +3,11 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, auc
 import os
 import argparse
-import seaborn as sns
-import pandas as pd
 from collections import defaultdict
 
 from mib.utils import get_signals_path
 
 import matplotlib as mpl
-
-mpl.rcParams["figure.dpi"] = 300
-mpl.rcParams["pdf.fonttype"] = 42
-mpl.rcParams["ps.fonttype"] = 42
-plt.rcParams["font.family"] = "Times New Roman"
 
 
 ATTACKS_TO_PLOT = [
@@ -22,7 +15,7 @@ ATTACKS_TO_PLOT = [
     # "LiRAOffline",
     # "LiRAOnline_aug",
     "LOSS",
-    "GradNorm",
+    # "GradNorm",
     "LiRAOnline",
     # "LiRAOnline_same_seed_ref",
     # "LiRAOnline_same_seed_ref_aug",
@@ -38,8 +31,23 @@ ATTACKS_TO_PLOT = [
     # "LiRAOnline_aug_last5",
     # "Activations",
     # "ActivationsOffline",
-    "ProperTheoryRef",
+    # "ProperTheoryRef",
+    "Reference",
+    "ProperTheoryRef_damping_0.2_lowrank_False"
 ]
+ATTACK_MAPPING = {
+    "LOSS": "LOSS",
+    "Reference": "Reference",
+    "ProperTheoryRef": "IHA (Ours)",
+    "ProperTheoryRef_damping_0.2_lowrank_False": "IHA (Ours)",
+    "LiRAOnline": "LiRA (Online)"
+}
+COLOR_MAPPING = {
+    "IHA (Ours)": 0,
+    "LiRA (Online)": 1,
+    "Reference": 2,
+    "LOSS": 3,
+}
 
 
 def main(args):
@@ -54,10 +62,14 @@ def main(args):
             # Remove ".ch" from end
             attack_name = attack[:-4]
             """
+            if int(model_index) in [3, 4, 5, 6, 8] and "ProperTheoryRef" in attack_name:
+                print("SKIPPED ONE!")
+                continue
+            """
             if attack_name not in ATTACKS_TO_PLOT:
                 print("Skipping", attack_name, "...")
                 continue
-            """
+            # """
             data = np.load(os.path.join(inside_model_index, attack), allow_pickle=True).item()
 
             signals_in = data["in"]
@@ -87,13 +99,33 @@ def main(args):
     print("Number of models per attack:", num_models[0])
     """
 
-    # Plot ROC curves
-    sns.set_style("whitegrid")
-    sns.set_context("paper")
-    sns.set_palette("tab10")
+    # Set colorblind-friendly colors
+    CB_colors = [
+        "#377eb8",
+        "#ff7f00",
+        "#4daf4a",
+        "#f781bf",
+        "#a65628",
+        "#984ea3",
+        "#999999",
+        "#e41a1c",
+        "#dede00",
+    ]
+
+    # Font-type and figure DPI
+    mpl.rcParams["figure.dpi"] = 500
+    mpl.rcParams["pdf.fonttype"] = 42
+    mpl.rcParams["ps.fonttype"] = 42
+    plt.rcParams["font.family"] = "Times New Roman"
+
+    # Increase font
+    plt.rcParams.update({"font.size": 14})
+    # Increase font of axes and their labels
+    plt.rcParams.update({"axes.labelsize": 14})
+    plt.rcParams.update({"xtick.labelsize": 14})
+    plt.rcParams.update({"ytick.labelsize": 14})
 
     # Aggregate results across models
-    df_for_sns = []
     for attack_name, info_ in info.items():
         mean_auc = np.mean([i["roc_auc"] for i in info_])
         print(
@@ -110,50 +142,33 @@ def main(args):
                 np.std([i["tpr@0.001fpr"] for i in info_]),
             )
         )
-
-        # TODO: Figure out proper plotting later
-        """
-        # Compute TPRs from each model for a given set of FPR values
-        fpr_values = info_[0]["fpr"]
-        tpr_values = np.zeros((len(info_), len(fpr_values)))
-        for i, info_ in enumerate(info_):
-            tpr_values[i] = np.array([tpr[np.where(np.array(fpr) < x)[0][-1]] for x in fpr_values])
-        tpr_values = np.mean(tpr_values, axis=0)
-
-        # Maintain DF for seaborn, since we want shaded areas for ROC curves
-        for fpr, tpr in zip(fpr_values, tpr_values):
-            df_for_sns.append({"FPR": fpr, "TPR": tpr, "Attack": "%s (AUC=%.3f)" % (attack_name, mean_auc)})
-        """
-        for fpr, tpr in zip(info_[args.which_plot]["fpr"], info_[args.which_plot]["tpr"]):
-            df_for_sns.append({"FPR": fpr, "TPR": tpr, "Attack": "%s (AUC=%.3f)" % (attack_name, mean_auc)})
-
-    exit(0)
-    df_for_sns = pd.DataFrame(df_for_sns)
-    sns.lineplot(data=df_for_sns, x="FPR", y="TPR", hue="Attack")
-
-    # TODO: Increase font
-    # TODO: Fix plot (current plot has shadings)
-    # TODO: Change to PDF (fina)
+        fprs = info_[args.which_plot]["fpr"]
+        tprs = info_[args.which_plot]["tpr"]
+        plt.plot(fprs, tprs, label=ATTACK_MAPPING[attack_name], c=CB_colors[COLOR_MAPPING[ATTACK_MAPPING[attack_name]]])
 
     # Make sure plot directory exists
-    if not os.path.exists(args.plotdir):
-        os.makedirs(args.plotdir)
+    if not os.path.exists(os.path.join(args.plotdir, args.dataset)):
+        os.makedirs(os.path.join(args.plotdir, args.dataset))
 
-    plt.title(f"ROC Curve: {args.dataset}, {args.model_arch}")
     plt.legend(loc="lower right")
+    # Custom legend, list fhtm in order of COLOR_MAPPING
+    fhtm = ["IHA (Ours)", "LiRA (Online)", "Reference", "LOSS"]
+    custom_lines = [plt.Line2D([0], [0], color=CB_colors[COLOR_MAPPING[fhtm[i]]], lw=2) for i in range(len(fhtm))]
+    plt.legend(custom_lines, fhtm, loc="lower right")
+
     plt.plot([0, 1], [0, 1], "r--")
     plt.xlim([0, 1])
     plt.ylim([0, 1])
     plt.ylabel("TPR")
     plt.xlabel("FPR")
-    plt.savefig(os.path.join(args.plotdir, f"{args.dataset}_{args.model_arch}_roc.png"))
+    plt.savefig(os.path.join(args.plotdir, args.dataset, f"{args.model_arch}_roc.pdf"))
 
     # Also save low TPR/FPR region
     plt.xlim([1e-5, 1e0])
     plt.ylim([1e-5, 1e0])
     plt.xscale("log")
     plt.yscale("log")
-    plt.savefig(os.path.join(args.plotdir, f"{args.dataset}_{args.model_arch}_roc_lowfpr.png"))
+    plt.savefig(os.path.join(args.plotdir, args.dataset, f"{args.model_arch}_roc_lowfpr.pdf"))
 
 
 if __name__ == "__main__":

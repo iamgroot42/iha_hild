@@ -23,6 +23,9 @@ class SIF(Attack):
         all_train_loader = kwargs.get("all_train_loader", None)
         approximate = kwargs.get("approximate", False)
         hessian = kwargs.get("hessian", None)
+        damping_eps = kwargs.get("damping_eps", 2e-1)
+        low_rank = kwargs.get("low_rank", False)
+
         if all_train_loader is None:
             raise ValueError(
                 "SIF requires all_train_loader to be specified"
@@ -92,19 +95,22 @@ class SIF(Attack):
             # """
         else:
             if hessian is None:
-                exact_H = compute_hessian(
-                    model, all_train_loader, self.criterion, device="cuda"
-                )
+                exact_H = compute_hessian(model, all_train_loader, self.criterion, device="cuda")
                 self.hessian = exact_H.cpu().clone().detach()
             else:
                 self.hessian = hessian
 
             L, Q = ch.linalg.eigh(self.hessian)
-            eps = 1e-1
 
-            qualifying_indices = ch.abs(L) > eps
-            Q_select = Q[:, qualifying_indices]
-            self.H_inverse = Q_select @ ch.diag(1 / L[qualifying_indices]) @ Q_select.T
+            if low_rank:
+                # Low-rank approximation
+                qualifying_indices = ch.abs(L) > damping_eps
+                Q_select = Q[:, qualifying_indices]
+                self.H_inverse = Q_select @ ch.diag(1 / L[qualifying_indices]) @ Q_select.T
+            else:
+                # Damping
+                L += damping_eps
+                self.H_inverse = Q @ ch.diag(1 / L) @ Q.T
 
     def collect_grad_on_all_data(self, loader):
         cumulative_gradients = None
@@ -161,3 +167,25 @@ class SIF(Attack):
 
         score = ch.dot(datapoint_ihvp, grad).cpu().item()
         return score
+
+    def get_thresholds(self, scores, labels, **kwargs) -> np.ndarray:
+        other_data_mem = kwargs.get("other_data_mem", None)
+        other_data_non = kwargs.get("other_data_non", None)
+        if other_data_mem is None or other_data_non is None:
+            raise ValueError("SIF requires other_data_mem and other_data_non to compute thresholds")
+
+        delta = np.max(other_data_mem) - np.min(other_data_non)
+        min_arr = np.linspace(np.min(other_data_non) - delta/2, np.min(other_data_non) + delta/2, 1000)
+        max_arr = np.linspace(np.max(other_data_mem) - delta/2, np.max(other_data_mem) + delta/2, 1000)
+
+        max_acc = 0.
+        min_thres, max_thres = 0., 0.
+        for i in min_arr:
+            for j in max_arr:
+                classification = np.array([1. if (score > i and score < j) else 0. for score in scores])
+                acc = np.mean(classification == labels)
+                if acc > max_acc:
+                    max_acc = acc
+                    min_thres = i
+                    max_thres = j
+        return np.array([min_thres, max_thres])
