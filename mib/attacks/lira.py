@@ -2,7 +2,6 @@
     LiRA, as described in https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=9833649
 """
 import numpy as np
-from typing import List
 import scipy
 import torch as ch
 
@@ -24,7 +23,7 @@ class LiRAOffline(Attack):
         """
             Expects 'x' to be shape (n_augs, ...) where n-augs is the number of augmentations (1 for no augmentations)
         """
-        x, y = x.cuda(), y.cuda()
+        x, y = x.to(self.device), y.to(self.device)
         out_models = kwargs.get("out_models", None)
         if out_models is None:
             raise ValueError("LiRAOffline requires out_models to be specified")
@@ -34,7 +33,7 @@ class LiRAOffline(Attack):
 
         confs = []
         for out_model in out_models:
-            out_model.cuda()
+            out_model.to(self.device)
             conf = compute_scaled_logit(out_model, x, y, mse=is_mse)
             out_model.cpu()
             confs.append(conf)
@@ -69,7 +68,7 @@ class LiRAOnline(Attack):
 
     @ch.no_grad()
     def compute_scores(self, x, y, **kwargs) -> np.ndarray:
-        x, y = x.cuda(), y.cuda()
+        x, y = x.to(self.device), y.to(self.device)
         out_models = kwargs.get("out_models", None)
         in_models = kwargs.get("in_models", None)
         x_aug = kwargs.get("x_aug", None)
@@ -84,14 +83,14 @@ class LiRAOnline(Attack):
         # if specified, also use augmented data
         x_ref_use, y_ref_use = x, y
         if x_aug is not None:
-            x_ref_use = x_aug.cuda()
+            x_ref_use = x_aug.to(self.device)
             # Make y_ref_use the same as y, but repeated for each augmentation
             y_ref_use = y.repeat(len(x_ref_use))
 
         # Out-model confidence values
         confs_out = []
         for out_model in out_models:
-            out_model.cuda()
+            out_model.to(self.device)
             conf = compute_scaled_logit(out_model, x_ref_use, y_ref_use, mse=is_mse)
             out_model.cpu()
             confs_out.append(conf)
@@ -100,7 +99,7 @@ class LiRAOnline(Attack):
         # In-model confidence values
         confs_in = []
         for in_model in in_models:
-            in_model.cuda()
+            in_model.to(self.device)
             conf = compute_scaled_logit(in_model, x_ref_use, y_ref_use, mse=is_mse)
             in_model.cpu()
             confs_in.append(conf)
@@ -147,8 +146,8 @@ class LiRAOnlineSmooth(Attack):
 
     def _compute_score(self, model, x, y):
         # Equivalent to log(p/1-p) where p is the probability of the true class
-        model.cuda()
-        loss = self.criterion(model(x.cuda()).detach(), y.cuda())
+        model.to(self.device)
+        loss = self.criterion(model(x.to(self.device)).detach(), y.to(self.device))
         model.cpu()
         eps = 1e-45
         score = -ch.log(ch.exp(loss + eps) - 1)
@@ -156,7 +155,7 @@ class LiRAOnlineSmooth(Attack):
 
     @ch.no_grad()
     def compute_scores(self, x, y, **kwargs) -> np.ndarray:
-        x, y = x.cuda(), y.cuda()
+        x, y = x.to(self.device), y.to(self.device)
         out_models = kwargs.get("out_models", None)
         in_models = kwargs.get("in_models", None)
         if out_models is None or in_models is None:
@@ -168,7 +167,7 @@ class LiRAOnlineSmooth(Attack):
         # Out-model confidence values
         confs_out = []
         for out_model in out_models:
-            out_model.cuda()
+            out_model.to(self.device)
             conf = self._compute_score(out_model, x, y)
             out_model.cpu()
             confs_out.append(conf)
@@ -177,7 +176,7 @@ class LiRAOnlineSmooth(Attack):
         # In-model confidence values
         confs_in = []
         for in_model in in_models:
-            in_model.cuda()
+            in_model.to(self.device)
             conf = self._compute_score(in_model, x, y)
             in_model.cpu()
             confs_in.append(conf)

@@ -3,6 +3,8 @@
 """
 import numpy as np
 import torch as ch
+import multiprocessing as mp
+from itertools import product
 
 from mib.attacks.base import Attack
 from torch.autograd import grad
@@ -169,10 +171,25 @@ class SIF(Attack):
         return score
 
     def get_thresholds(self, scores, labels, **kwargs) -> np.ndarray:
-        other_data_mem = kwargs.get("other_data_mem", None)
-        other_data_non = kwargs.get("other_data_non", None)
-        if other_data_mem is None or other_data_non is None:
-            raise ValueError("SIF requires other_data_mem and other_data_non to compute thresholds")
+        other_data_mem = scores[labels == 1]
+        other_data_non = scores[labels == 0]
+
+        delta = np.max(other_data_mem) - np.min(other_data_non)
+        min_arr = np.linspace(np.min(other_data_non) - delta/2, np.min(other_data_non) + delta/2, 1000)
+        max_arr = np.linspace(np.max(other_data_mem) - delta/2, np.max(other_data_mem) + delta/2, 1000)
+
+        pool = mp.Pool(mp.cpu_count() - 2)
+        results = pool.map(worker, product(min_arr, max_arr, [scores], [labels]))
+        pool.close()
+
+        max_acc, min_thres, max_thres = max(results)
+
+        return np.array([min_thres, max_thres])
+
+    """
+    def get_thresholds(self, scores, labels, **kwargs) -> np.ndarray:
+        other_data_mem = scores[labels == 1]
+        other_data_non = scores[labels == 0]
 
         delta = np.max(other_data_mem) - np.min(other_data_non)
         min_arr = np.linspace(np.min(other_data_non) - delta/2, np.min(other_data_non) + delta/2, 1000)
@@ -181,11 +198,23 @@ class SIF(Attack):
         max_acc = 0.
         min_thres, max_thres = 0., 0.
         for i in min_arr:
+            lower_bound = scores > i
             for j in max_arr:
-                classification = np.array([1. if (score > i and score < j) else 0. for score in scores])
+                upper_bound = scores < j
+                classification = np.logical_and(lower_bound, upper_bound) * 1.
                 acc = np.mean(classification == labels)
                 if acc > max_acc:
                     max_acc = acc
                     min_thres = i
                     max_thres = j
         return np.array([min_thres, max_thres])
+        """
+
+
+def worker(args):
+    i, j, scores, labels = args
+    lower_bound = scores > i
+    upper_bound = scores < j
+    classification = np.logical_and(lower_bound, upper_bound) * 1.0
+    acc = np.mean(classification == labels)
+    return acc, i, j

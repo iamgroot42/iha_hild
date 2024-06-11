@@ -6,26 +6,31 @@ from tqdm import tqdm
 import torch as ch
 import argparse
 import copy
-import torchvision
-from torchvision import transforms
 
 from mib.models.utils import get_model
 from mib.utils import get_models_path
 from mib.dataset.utils import get_dataset
 
 
-def get_loader(dataset, indices, batch_size: int, start_seed: int = 42, shuffle: bool = True):
-    num_workers = 2
+def get_loader(dataset, indices,
+               batch_size: int,
+               start_seed: int = 42,
+               shuffle: bool = True,
+               num_workers: int = 2):
     subset_ds = ch.utils.data.Subset(dataset, indices)
+
+    def worker_init_fn(worker_id):
+        np.random.seed(start_seed + worker_id)
+
     loader = ch.utils.data.DataLoader(
         subset_ds,
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=2,
-        worker_init_fn=lambda worker_id: np.random.seed(start_seed + worker_id),
+        persistent_workers=True if num_workers > 0 else False,
+        prefetch_factor=2 if num_workers > 0 else None,
+        worker_init_fn=worker_init_fn if num_workers > 0 else None,
     )
     return loader
 

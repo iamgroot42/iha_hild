@@ -18,10 +18,10 @@ class LOSS(Attack):
 
     @ch.no_grad()
     def compute_scores(self, x, y, **kwargs) -> np.ndarray:
-        logits = self.model(x.cuda()).detach()
+        logits = self.model(x.to(self.device)).detach()
         if logits.shape[1] == 1:
             logits = logits.squeeze(1)
-        loss = self.criterion(logits, y.cuda())
+        loss = self.criterion(logits, y.to(self.device))
         return -loss.cpu().numpy()
 
 
@@ -42,7 +42,7 @@ class LOSSSmooth(Attack):
 
     @ch.no_grad()
     def compute_scores(self, x, y, **kwargs) -> np.ndarray:
-        loss = self.criterion(self.model(x.cuda()).detach(), y.cuda())
+        loss = self.criterion(self.model(x.to(self.device)).detach(), y.to(self.device))
         return -loss.cpu().numpy()
 
 
@@ -56,4 +56,4 @@ class Logit(Attack):
 
     @ch.no_grad()
     def compute_scores(self, x, y, **kwargs) -> np.ndarray:
-        return compute_scaled_logit(self.model, x.cuda(), y.cuda())
+        return compute_scaled_logit(self.model, x.to(self.device), y.to(self.device))

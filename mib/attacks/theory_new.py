@@ -12,6 +12,33 @@ from torch_influence import BaseObjective
 from torch_influence import AutogradInfluenceModule, LiSSAInfluenceModule, HVPModule, CGInfluenceModule
 
 
+class MyObjective(BaseObjective):
+    def __init__(self, criterion):
+        self._criterion = criterion
+
+    def train_outputs(self, model, batch):
+        return model(batch[0])
+
+    def train_loss_on_outputs(self, outputs, batch):
+        if outputs.shape[1] == 1:
+            return self._criterion(
+                outputs.squeeze(1), batch[1].float()
+            )  # mean reduction required
+        else:
+            return self._criterion(outputs, batch[1])  # mean reduction required
+
+    def train_regularization(self, params):
+        return 0
+
+    def test_loss(self, model, params, batch):
+        output = model(batch[0])
+        # no regularization in test loss
+        if output.shape[1] == 1:
+            return self._criterion(output.squeeze(1), batch[1].float())
+        else:
+            return self._criterion(output, batch[1])
+
+
 class ProperTheoryRef(Attack):
     """
     I1 + I3 based term that makes assumption about relationship between I2 and I3.
@@ -36,60 +63,39 @@ class ProperTheoryRef(Attack):
         )
 
         self.approximate = approximate
-        self.model.cuda()
+        self.model.to(self.device)
 
         self.all_data_grad = self.collect_grad_on_all_data(all_train_loader)
 
         # Exact Hessian
         if self.approximate:
-            class MyObjective(BaseObjective):
-                def train_outputs(self, model, batch):
-                    return model(batch[0])
-
-                def train_loss_on_outputs(self, outputs, batch):
-                    if outputs.shape[1] == 1:
-                        return criterion(outputs.squeeze(1), batch[1].float())  # mean reduction required
-                    else:
-                        return criterion(outputs, batch[1])  # mean reduction required
-
-                def train_regularization(self, params):
-                    return 0
-
-                def test_loss(self, model, params, batch):
-                    output = model(batch[0])
-                    # no regularization in test loss
-                    if output.shape[1] == 1:
-                        return criterion(output.squeeze(1), batch[1].float())
-                    else:
-                        return criterion(output, batch[1])
-
             # LiSSA - 40s/iteration
             # GC - 38s/iteration
             """
             self.ihvp_module = LiSSAInfluenceModule(
                 model=model,
-                objective=MyObjective(),
+                objective=MyObjective(criterion),
                 train_loader=all_train_loader,
                 test_loader=None,
-                device="cuda",
+                device=self.device,
                 repeat=4,
                 depth=100,  # 5000 for MLP and Transformer, 10000 for CNN
                 scale=25,
-                damp=2e-1,
+                damp=damping_eps,
             )
             """
             self.ihvp_module = CGInfluenceModule(
                 model=model,
-                objective=MyObjective(),
+                objective=MyObjective(criterion),
                 train_loader=all_train_loader,
                 test_loader=None,
-                device="cuda",
-                damp=1e-2,
+                device=self.device,
+                damp=damping_eps,
             )
             # """
         else:
             if hessian is None:
-                exact_H = compute_hessian(model, all_train_loader, self.criterion, device="cuda")
+                exact_H = compute_hessian(model, all_train_loader, self.criterion, device=self.device)
                 self.hessian = exact_H.cpu().clone().detach()
             else:
                 self.hessian = hessian
@@ -112,7 +118,7 @@ class ProperTheoryRef(Attack):
             # Zero-out accumulation
             self.model.zero_grad()
             # Compute gradients
-            x, y = x.cuda(), y.cuda()
+            x, y = x.to(self.device), y.to(self.device)
             logits = self.model(x)
             if logits.shape[1] == 1:
                 loss = self.criterion(logits.squeeze(), y.float()) * len(x)
@@ -134,11 +140,11 @@ class ProperTheoryRef(Attack):
 
     def get_specific_grad(self, point_x, point_y):
         self.model.zero_grad()
-        logits = self.model(point_x.cuda())
+        logits = self.model(point_x.to(self.device))
         if logits.shape[1] == 1:
-            loss = self.criterion(logits.squeeze(1), point_y.float().cuda())
+            loss = self.criterion(logits.squeeze(1), point_y.float().to(self.device))
         else:
-            loss = self.criterion(logits, point_y.cuda())
+            loss = self.criterion(logits, point_y.to(self.device))
         ret_loss = loss.item()
         loss.backward()
         flat_grad = []
@@ -149,7 +155,7 @@ class ProperTheoryRef(Attack):
         return flat_grad, ret_loss
 
     def compute_scores(self, x, y, **kwargs) -> np.ndarray:
-        x, y = x.cuda(), y.cuda()
+        x, y = x.to(self.device), y.to(self.device)
         learning_rate = kwargs.get("learning_rate", None)
         num_samples = kwargs.get("num_samples", None)
         is_train = kwargs.get("is_train", None)
@@ -177,8 +183,8 @@ class ProperTheoryRef(Attack):
             datapoint_ihvp = self.ihvp_module.inverse_hvp(grad)
             ihvp_alldata   = self.ihvp_module.inverse_hvp(all_other_data_grad)
         else:
-            datapoint_ihvp = (self.H_inverse @ grad.cpu()).cuda()
-            ihvp_alldata   = (self.H_inverse @ all_other_data_grad.cpu()).cuda()
+            datapoint_ihvp = (self.H_inverse @ grad.cpu()).to(self.device)
+            ihvp_alldata   = (self.H_inverse @ all_other_data_grad.cpu()).to(self.device)
 
         I2 = ch.dot(datapoint_ihvp, datapoint_ihvp).cpu().item() / num_samples
         I3 = ch.dot(ihvp_alldata, datapoint_ihvp).cpu().item() * 2
@@ -195,38 +201,23 @@ def fast_ihvp(model, vec, loader, criterion, device: str = "cpu"):
     """
         Use LiSSA to compute HVP for a given model and dataloader
     """
-    class MyObjective(BaseObjective):
-        def train_outputs(self, model, batch):
-            return model(batch[0])
-
-        def train_loss_on_outputs(self, outputs, batch):
-            return criterion(outputs, batch[1])  # mean reduction required
-
-        def train_regularization(self, params):
-            return 0
-
-        def test_loss(self, model, params, batch):
-            return criterion(
-                model(batch[0]), batch[1]
-            )  # no regularization in test loss
-
     module = LiSSAInfluenceModule(
         model=model,
-        objective=MyObjective(),
+        objective=MyObjective(criterion),
         train_loader=loader,
         test_loader=None,
         device=device,
         damp=0,
         repeat=20,
-        depth=100, #5000 for MLP and Transformer, 10000 for CNN
-        scale=50 # test in {10, 25, 50, 100, 150, 200, 250, 300, 400, 500} for convergence
+        depth=100,  # 5000 for MLP and Transformer, 10000 for CNN
+        scale=50,  # test in {10, 25, 50, 100, 150, 200, 250, 300, 400, 500} for convergence
     )
 
     # Get projection of vec onto inverse-Hessian
     ihvp = module.inverse_hvp(vec)
 
     """
-    hvp_module = HVPModule(model, MyObjective(), loader, device="cuda")
+    hvp_module = HVPModule(model, MyObjective(criterion), loader, device=self.device)
     ihvp = hso_ihvp(
         vec,
         hvp_module,
@@ -242,37 +233,16 @@ def compute_hessian(model, loader, criterion, device: str = "cpu"):
     """
     Compute Hessian at given point
     """
-    class MyObjective(BaseObjective):
-        def train_outputs(self, model, batch):
-            return model(batch[0])
-
-        def train_loss_on_outputs(self, outputs, batch):
-            if outputs.shape[1] == 1:
-                return criterion(outputs.squeeze(1), batch[1].float())  # mean reduction required
-            else:
-                return criterion(outputs, batch[1])  # mean reduction required
-
-        def train_regularization(self, params):
-            return 0
-
-        def test_loss(self, model, params, batch):
-            output = model(batch[0])
-            # no regularization in test loss
-            if output.shape[1] == 1:
-                return criterion(output.squeeze(1), batch[1].float())
-            else:
-                return criterion(output, batch[1])
-
     model.zero_grad()
 
     module = AutogradInfluenceModule(
         model=model,
-        objective=MyObjective(),  
+        objective=MyObjective(criterion),
         train_loader=loader,
         test_loader=None,
         device=device,
         damp=0,
-        store_as_hessian=True
+        store_as_hessian=True,
     )
 
     H = module.get_hessian()
