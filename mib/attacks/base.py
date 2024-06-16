@@ -17,11 +17,11 @@ class Attack(object):
         name: str,
         model,
         criterion,
+        device: str,
         whitebox: bool = False,
         reference_based: bool = False,
         requires_trace: bool = False,
         uses_hessian: bool = False,
-        device: str = "cuda"
     ):
         self.name = name
         self.model = model

@@ -4,6 +4,7 @@
 """
 import argparse
 import os
+import copy
 import torch as ch
 import numpy as np
 from tqdm import tqdm
@@ -46,10 +47,11 @@ def member_nonmember_loaders(
     train_data,
     train_idx,
     num_points_sample: int,
-    args,
+    exp_seed: int,
     num_nontrain_pool: int = None,
     batch_size: int = 1,
-    want_all_member_nonmember: bool = False
+    want_all_member_nonmember: bool = False,
+    split_each_loader: int = 1
 ):
     """
     num_points_sample = -1 means all points should be used, and # of non-members will be set to be = # of members
@@ -66,11 +68,11 @@ def member_nonmember_loaders(
     if want_all_member_nonmember:
         train_index_subset = train_idx
     else:
-        np.random.seed(args.exp_seed)
+        np.random.seed(exp_seed)
         train_index_subset = np.random.choice(train_idx, num_points_sample, replace=False)
 
     # Sample non-members
-    np.random.seed(args.exp_seed + 1)
+    np.random.seed(exp_seed + 1)
     nonmember_indices = np.random.choice(
         other_indices_train,
         (
@@ -92,33 +94,49 @@ def member_nonmember_loaders(
         nonmember_dset_ft = ch.utils.data.Subset(train_data, nonmember_indices_ft)
 
         # Sample non-members
-        np.random.seed(args.exp_seed + 2)
+        np.random.seed(exp_seed + 2)
         nonmember_index_subset = np.random.choice(
             nonmember_indices_test,
             num_points_sample,
             replace=False,
         )
 
-    # Make dsets
-    member_dset = ch.utils.data.Subset(train_data, train_index_subset)
-    nonmember_dset = ch.utils.data.Subset(
-        train_data,
-        nonmember_index_subset,
-    )
-
-    # Make loaders out of data
-    member_loader = ch.utils.data.DataLoader(
-        member_dset, batch_size=batch_size, shuffle=False
-    )
-    nonmember_loader = ch.utils.data.DataLoader(
-        nonmember_dset, batch_size=batch_size, shuffle=False
-    )
-
     # Assert no overlap between train_index_subset and nonmember_index_subset
     # Just to make sure nothing went wrong above!
     if len(set(train_index_subset).intersection(set(nonmember_index_subset))) != 0:
         print("Non-overlap found between train and non-member data. Shouldn't have happened! Check code.")
         exit(0)
+
+    # Make dsets
+    if split_each_loader > 1:
+        train_index_splits = np.array_split(train_index_subset, split_each_loader)
+        nonmember_index_splits = np.array_split(nonmember_index_subset, split_each_loader)
+        member_loader, nonmember_loader = [], []
+        for (mem_split, nonmem_split) in zip(train_index_splits, nonmember_index_splits):
+            member_dset = ch.utils.data.Subset(train_data, mem_split)
+            nonmember_dset = ch.utils.data.Subset(train_data, nonmem_split)
+            member_loader_ = ch.utils.data.DataLoader(
+                member_dset, batch_size=batch_size, shuffle=False
+            )
+            nonmember_loader_ = ch.utils.data.DataLoader(
+                nonmember_dset, batch_size=batch_size, shuffle=False
+            )
+            member_loader.append(member_loader_)
+            nonmember_loader.append(nonmember_loader_)
+    else:
+        member_dset = ch.utils.data.Subset(train_data, train_index_subset)
+        nonmember_dset = ch.utils.data.Subset(
+            train_data,
+            nonmember_index_subset,
+        )
+
+        # Make loaders out of data
+        member_loader = ch.utils.data.DataLoader(
+            member_dset, batch_size=batch_size, shuffle=False
+        )
+        nonmember_loader = ch.utils.data.DataLoader(
+            nonmember_dset, batch_size=batch_size, shuffle=False
+        )
 
     if want_all_member_nonmember:
         return member_loader, nonmember_loader
@@ -253,12 +271,10 @@ def main(args):
         train_data,
         train_index,
         args.num_points,
-        args,
-        num_nontrain_pool
+        args.exp_seed,
+        num_nontrain_pool=num_nontrain_pool,
+        split_each_loader=args.split_each_loader,
     )
-
-    # Temporary (for Hessian-related attack)
-    entire_train_data_loader = get_loader(train_data, train_index, 512, num_workers=0)
 
     hessian = None
     # If attack uses uses_hessian, try loading from disk if available
@@ -269,28 +285,38 @@ def main(args):
         hessian = ch.load(os.path.join(hessian_store_path, "hessian.ch"))
         print("Loaded Hessian!")
 
-    # For reference-based attacks, train out models
-    attacker_mem = get_attack(args.attack)(
-        target_model,
-        criterion,
-        all_train_loader=entire_train_data_loader,
-        hessian=hessian,
-        damping_eps=args.damping_eps,
-        low_rank=args.low_rank,
-        approximate=args.approximate_ihvp,
-        device="cuda:0",
-    )
+    # Throw error if args.split_each_loader > num GPUs
+    if args.split_each_loader > ch.cuda.device_count() // 2:
+        raise ValueError("split_each_loader cannot be greater than num GPUs / 2")
 
-    attacker_nonmem = get_attack(args.attack)(
-        target_model,
-        criterion,
-        all_train_loader=entire_train_data_loader,
-        hessian=hessian,
-        damping_eps=args.damping_eps,
-        low_rank=args.low_rank,
-        approximate=args.approximate_ihvp,
-        device="cuda:1",
-    )
+    # For reference-based attacks, train out models
+    attackers_mem, attackers_nonmem = [], []
+    for i in range(args.split_each_loader):
+        attacker_mem = get_attack(args.attack)(
+            copy.deepcopy(target_model),
+            criterion,
+            all_train_loader=get_loader(train_data, train_index, 512, num_workers=0),
+            hessian=hessian,
+            damping_eps=args.damping_eps,
+            low_rank=args.low_rank,
+            save_compute_trick=args.save_compute_trick,
+            approximate=args.approximate_ihvp,
+            device=f"cuda:{i}",
+        )
+        attackers_mem.append(attacker_mem)
+
+        attacker_nonmem = get_attack(args.attack)(
+            copy.deepcopy(target_model),
+            criterion,
+            all_train_loader=get_loader(train_data, train_index, 512, num_workers=0),
+            hessian=hessian,
+            damping_eps=args.damping_eps,
+            low_rank=args.low_rank,
+            approximate=args.approximate_ihvp,
+            save_compute_trick=args.save_compute_trick,
+            device=f"cuda:{i+args.split_each_loader}",
+        )
+        attackers_nonmem.append(attacker_nonmem)
 
     """
     # Register trace if required
@@ -300,7 +326,7 @@ def main(args):
             train_data,
             train_index,
             args.num_points,
-            args,
+            args.exp_seed,
             num_nontrain_pool=5000,
             want_all_member_nonmember=True,
             batch_size=256,
@@ -310,7 +336,7 @@ def main(args):
         attacker.register_trace(model_trace)
     """
 
-    if attacker_mem.reference_based and not args.l_mode:
+    if attackers_mem[0].reference_based and not args.l_mode:
         ref_models, ref_indices = load_ref_models(model_dir, args, ds.num_classes)
 
         # For each reference model, look at ref_indices and create a 'isin' based 2D bool-map
@@ -325,7 +351,7 @@ def main(args):
 
         """
         # Compute traces, if required
-        if attacker_mem.requires_trace:
+        if attackers_mem[0].requires_trace:
             ref_traces = []
             for m, ids in tqdm(
                 zip(ref_models, ref_indices), desc="Computing traces", total=len(ref_models)
@@ -335,7 +361,7 @@ def main(args):
                     train_data,
                     ids,
                     args.num_points,
-                    args,
+                    args.exp_seed,
                     # num_train_points=num_train_points,
                     num_nontrain_pool=5000,
                     want_all_member_nonmember=True,
@@ -350,52 +376,57 @@ def main(args):
         nonmember_map = None
         ref_models = None
         # Shift model to CUDA (won't have ref-based models in memory as well)
-        target_model.cuda()
+        # target_model.cuda()
 
     # Shared dict to get reutnr values
     manager = multiprocessing.Manager()
     return_dict = manager.dict()
     processes = []
 
-    # Process for member data
-    p = DillProcess(
-        target=get_signals,
-        args=(
-            return_dict,
-            args,
-            attacker_mem,
-            member_loader,
-            ds,
-            True,
-            nonmember_dset_ft,
-            model_dir,
-            member_map,
-            learning_rate,
-            num_samples,
-            ref_models,
-        ),
-    )
-    p.start()
-    processes.append(p)
-    # Process for non-member data
-    p = DillProcess(
-        target=get_signals,
-        args=(
-            return_dict,
-            args,
-            attacker_nonmem,
-            nonmember_loader,
-            ds,
-            False,
-            nonmember_dset_ft,
-            model_dir,
-            nonmember_map,
-            learning_rate,
-            num_samples,
-            ref_models,
-        ),
-    )
-    p.start()
+    if args.split_each_loader == 1:
+        member_loader = [member_loader]
+        nonmember_loader = [nonmember_loader]
+    for i in range(args.split_each_loader):
+        # Process for member data
+        p = DillProcess(
+            target=get_signals,
+            args=(
+                return_dict,
+                args,
+                attackers_mem[i],
+                member_loader[i],
+                ds,
+                True,
+                nonmember_dset_ft,
+                model_dir,
+                member_map,
+                learning_rate,
+                num_samples,
+                ref_models,
+            ),
+        )
+        p.start()
+        processes.append(p)
+        # Process for non-member data
+        p = DillProcess(
+            target=get_signals,
+            args=(
+                return_dict,
+                args,
+                attackers_nonmem[i],
+                nonmember_loader[i],
+                ds,
+                False,
+                nonmember_dset_ft,
+                model_dir,
+                nonmember_map,
+                learning_rate,
+                num_samples,
+                ref_models,
+            ),
+        )
+        p.start()
+        processes.append(p)
 
     # Wait for all processes to finish
     for p in processes:
@@ -500,8 +531,10 @@ def main(args):
         attack_name += f"_{args.num_ref_models}_ref"
     if args.aug:
         attack_name += "_aug"
-    if attacker_mem.uses_hessian:
+    if attackers_mem[0].uses_hessian:
         attack_name += f"_damping_{args.damping_eps}_lowrank_{args.low_rank}"
+    if args.approximate_ihvp:
+        attack_name += "_approx_ihvp"
 
     if args.sif_proper_mode:
         attack_name += "_sif_proper_mode"
@@ -577,7 +610,7 @@ def main(args):
                 total_preds_.append(0.)
             else:
                 scores_ = np.concatenate((signals_out, signals_in[:i], signals_in[i + 1 :]))
-                min_t, max_t = attacker_mem.get_thresholds(scores_, labels_)
+                min_t, max_t = attackers_mem[0].get_thresholds(scores_, labels_)
                 if min_t < signals_in[i] and signals_in[i] < max_t:
                     total_preds_.append(1.)
                 else:
@@ -603,12 +636,12 @@ def main(args):
     )
 
     # Save Hessian, if computed and didn't exist before
-    if attacker_mem.uses_hessian and (
+    if attackers_mem[0].uses_hessian and (
         not os.path.exists(os.path.join(hessian_store_path, "hessian.ch"))
     ):
         os.makedirs(hessian_store_path, exist_ok=True)
         ch.save(
-            attacker_mem.get_hessian(), os.path.join(hessian_store_path, "hessian.ch")
+            attackers_mem[0].get_hessian(), os.path.join(hessian_store_path, "hessian.ch")
         )
         print("Saved Hessian!")
 
@@ -624,6 +657,11 @@ if __name__ == "__main__":
         "--approximate_ihvp",
         action="store_true",
         help="If true, use approximate iHV (using CG) instead of exact iHVP",
+    )
+    args.add_argument(
+        "--save_compute_trick",
+        action="store_true",
+        help="If true, use trick to skip computing H-1\grad(L0) for each target record.",
     )
     args.add_argument(
         "--low_rank",
@@ -662,6 +700,12 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Custom suffix (folder) to load models from",
+    )
+    args.add_argument(
+        "--split_each_loader",
+        type=int,
+        default=2,
+        help="Split each loader into this many parts. Use > 1 for more parallelism",
     )
     args = args.parse_args()
 

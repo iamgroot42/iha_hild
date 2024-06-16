@@ -43,12 +43,13 @@ class ProperTheoryRef(Attack):
     """
     I1 + I3 based term that makes assumption about relationship between I2 and I3.
     """
-    def __init__(self, model, criterion, **kwargs):
+    def __init__(self, model, criterion, device: str = "cuda", **kwargs):
         all_train_loader = kwargs.get("all_train_loader", None)
-        approximate = kwargs.get("approximate", False)
-        hessian = kwargs.get("hessian", None)
-        damping_eps = kwargs.get("damping_eps", 2e-1)
-        low_rank = kwargs.get("low_rank", False)
+        approximate = kwargs.get("approximate", False) # Use approximate iHVP instead of exact?
+        hessian = kwargs.get("hessian", None) # Precomputed Hessian, if available
+        damping_eps = kwargs.get("damping_eps", 2e-1) # Damping (or cutoff for low-rank approximation)
+        low_rank = kwargs.get("low_rank", False) # Use low-rank approximation for Hessian?
+        save_compute_trick = kwargs.get("save_compute_trick", False) # Use L1 = L0 + 1/n l(z) trick to reduce iHVP calls per point from 2 to 1
 
         if all_train_loader is None:
             raise ValueError("ProperTheoryRef requires all_train_loader to be specified")
@@ -56,6 +57,7 @@ class ProperTheoryRef(Attack):
             "ProperTheoryRef",
             model,
             criterion,
+            device=device,
             reference_based=False,
             requires_trace=False,
             whitebox=True,
@@ -111,6 +113,15 @@ class ProperTheoryRef(Attack):
                 # Damping
                 L += damping_eps
                 self.H_inverse = Q @ ch.diag(1 / L) @ Q.T
+
+        self.l1_ihvp = None
+        if save_compute_trick:
+            # n * L1 = (n-1) * L0 + l(z)
+            # L0 = (n * L1 - l(z) / (n-1)
+            if self.approximate:
+                self.l1_ihvp = self.ihvp_module.inverse_hvp(self.all_data_grad)
+            else:
+                self.l1_ihvp = (self.H_inverse @ self.all_data_grad.cpu()).to(self.device)
 
     def collect_grad_on_all_data(self, loader):
         cumulative_gradients = None
@@ -180,11 +191,21 @@ class ProperTheoryRef(Attack):
             all_other_data_grad = self.all_data_grad
 
         if self.approximate:
+            # H-1 * grad(l(z))
             datapoint_ihvp = self.ihvp_module.inverse_hvp(grad)
-            ihvp_alldata   = self.ihvp_module.inverse_hvp(all_other_data_grad)
+            # H-1 * grad(L0(z))
+            if self.l1_ihvp is not None:
+                ihvp_alldata = (num_samples * self.l1_ihvp - datapoint_ihvp) / (num_samples - 1)
+            else:
+                ihvp_alldata   = self.ihvp_module.inverse_hvp(all_other_data_grad)
         else:
+            # H-1 * grad(l(z))
             datapoint_ihvp = (self.H_inverse @ grad.cpu()).to(self.device)
-            ihvp_alldata   = (self.H_inverse @ all_other_data_grad.cpu()).to(self.device)
+            # H-1 * grad(L0(z))
+            if self.l1_ihvp is not None:
+                ihvp_alldata = (num_samples * self.l1_ihvp - datapoint_ihvp) / (num_samples - 1)
+            else:
+                ihvp_alldata   = (self.H_inverse @ all_other_data_grad.cpu()).to(self.device)
 
         I2 = ch.dot(datapoint_ihvp, datapoint_ihvp).cpu().item() / num_samples
         I3 = ch.dot(ihvp_alldata, datapoint_ihvp).cpu().item() * 2
