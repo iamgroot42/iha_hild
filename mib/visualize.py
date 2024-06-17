@@ -11,27 +11,8 @@ import matplotlib as mpl
 
 
 ATTACKS_TO_PLOT = [
-    # "LiRAOnline",
-    # "LiRAOffline",
-    # "LiRAOnline_aug",
     "LOSS",
-    # "GradNorm",
     "LiRAOnline",
-    # "LiRAOnline_same_seed_ref",
-    # "LiRAOnline_same_seed_ref_aug",
-    # "LiRAOnline_20_ref_aug",
-    # "LiRAOnline_same_seed_ref_20_ref",
-    # "LiRAOnline_same_seed_ref_last5",
-    # "LiRAOnline_same_seed_ref_aug_last5",
-    # "UnlearnGradNorm",
-    # "UnlearningAct",
-    # "LiRAOnline_best5",
-    # "LiRAOnline_aug_best5",
-    # "LiRAOnline_last5",
-    # "LiRAOnline_aug_last5",
-    # "Activations",
-    # "ActivationsOffline",
-    # "ProperTheoryRef",
     "Reference",
     "ProperTheoryRef_damping_0.2_lowrank_False"
 ]
@@ -51,7 +32,6 @@ COLOR_MAPPING = {
 
 
 def main(args):
-    # signals_path = os.path.join(get_signals_path(), "unhinged_audit", str(args.model_index))
     signals_path = os.path.join(get_signals_path(), args.dataset, args.model_arch)
 
     info = defaultdict(list)
@@ -61,15 +41,9 @@ def main(args):
         for attack in os.listdir(inside_model_index):
             # Remove ".ch" from end
             attack_name = attack[:-4]
-            """
-            if int(model_index) in [3, 4, 5, 6, 8] and "ProperTheoryRef" in attack_name:
-                print("SKIPPED ONE!")
-                continue
-            """
             if attack_name not in ATTACKS_TO_PLOT:
                 print("Skipping", attack_name, "...")
                 continue
-            # """
             data = np.load(os.path.join(inside_model_index, attack), allow_pickle=True).item()
 
             signals_in = data["in"]

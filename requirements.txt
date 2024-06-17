@@ -1,0 +1,4 @@
+pyro-ppl=>1.9.1
+gpytorch>=1.9.0
+cupy-cuda11x
+git+https://github.com/iamgroot42/torch-influence.git
