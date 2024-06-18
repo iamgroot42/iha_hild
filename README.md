@@ -1,5 +1,5 @@
 # auditing_mi
-Code for our paper '_Do Parameters Reveal More than Loss for Membership Inference?_'
+Code for our paper [Do Parameters Reveal More than Loss for Membership Inference?](https://arxiv.org/pdf/2406.11544)
 
 ## Instructions
 
@@ -39,4 +39,16 @@ For example, to generate attack signals for Purchase-100 for MLP2 for IHA, run:
 
 ```bash
 python mib/attack.py --dataset purchase100 --model_arch mlp2 --attack ProperTheoryRef --num_points -1
+```
+
+## Citation
+
+```bibtex
+@inproceedings{suri2024do,
+  title     = {Do Parameters Reveal More than Loss for Membership Inference?},
+  author    = {Anshuman Suri and Xiao Zhang and David Evans},
+  booktitle = {Workshop on High-dimensional Learning Dynamics (HiLD), ICML},
+  year      = {2024},
+  url       = {https://arxiv.org/abs/2406.11544}
+}
 ```
