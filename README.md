@@ -1,5 +1,6 @@
 # auditing_mi
-Code for our paper [Do Parameters Reveal More than Loss for Membership Inference?](https://arxiv.org/pdf/2406.11544)
+
+Code for our paper [Do Parameters Reveal More than Loss for Membership Inference?](https://arxiv.org/pdf/2406.11544) at TMLR.
 
 ## Instructions
 
@@ -44,10 +45,10 @@ python mib/attack.py --dataset purchase100 --model_arch mlp2 --attack ProperTheo
 ## Citation
 
 ```bibtex
-@inproceedings{suri2024do,
+@article{suri2024do,
   title     = {Do Parameters Reveal More than Loss for Membership Inference?},
   author    = {Anshuman Suri and Xiao Zhang and David Evans},
-  booktitle = {Workshop on High-dimensional Learning Dynamics (HiLD), ICML},
+  journal   = {Transactions on Machine Learning Research (TMLR)},
   year      = {2024},
   url       = {https://arxiv.org/abs/2406.11544}
 }
